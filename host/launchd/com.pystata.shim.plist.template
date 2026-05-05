@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent template for pystata-shim.
+
+  Placeholders are replaced by host/scripts/setup_host.sh:
+    __START_SCRIPT__        path to $PYSTATA_SHIM_HOME/start.sh
+    __PYSTATA_SHIM_HOME__   $PYSTATA_SHIM_HOME
+    __PYSTATA_SHIM_HOST__   bind host (default 127.0.0.1)
+    __PYSTATA_SHIM_PORT__   bind port (default 8787)
+    __PYSTATA_EDITION__     Stata edition (mp|se|be)
+    __PYSTATA_UTILITIES__   path to Stata's utilities dir
+
+  The agent is loaded into the current user's GUI domain, so it runs as
+  your user account with access to your Stata license. Reload after
+  editing with:
+
+      launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.pystata.shim.plist
+      launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pystata.shim.plist
+      launchctl kickstart -k gui/$(id -u)/com.pystata.shim
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pystata.shim</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__START_SCRIPT__</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PYSTATA_SHIM_HOME__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYSTATA_SHIM_HOME</key>
+        <string>__PYSTATA_SHIM_HOME__</string>
+
+        <key>PYSTATA_SHIM_HOST</key>
+        <string>__PYSTATA_SHIM_HOST__</string>
+
+        <key>PYSTATA_SHIM_PORT</key>
+        <string>__PYSTATA_SHIM_PORT__</string>
+
+        <key>PYSTATA_EDITION</key>
+        <string>__PYSTATA_EDITION__</string>
+
+        <key>PYSTATA_UTILITIES</key>
+        <string>__PYSTATA_UTILITIES__</string>
+
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__PYSTATA_SHIM_HOME__/shim.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__PYSTATA_SHIM_HOME__/shim.stderr.log</string>
+</dict>
+</plist>

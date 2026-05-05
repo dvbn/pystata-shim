@@ -1,0 +1,7 @@
+#!/bin/sh
+# Thin wrapper so `stata-do` (no extension) is usable as a CLI once
+# the client directory is on PATH. Forwards all arguments to
+# stata-do.py in the same directory. POSIX-only so it runs under
+# busybox/Alpine without `bash` installed.
+here="$(cd "$(dirname "$0")" && pwd)"
+exec python3 "${here}/stata-do.py" "$@"

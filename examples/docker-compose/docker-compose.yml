@@ -1,0 +1,37 @@
+# Run with `docker compose up` from THIS directory (examples/docker-compose/).
+# The `../../client` bind mount is resolved relative to the compose file, so
+# invoking compose from elsewhere will not find the client files.
+services:
+  agent:
+    image: python:3.12-slim
+    working_dir: /workspace
+    environment:
+      - PYSTATA_SHIM_TOKEN
+      - PYSTATA_SHIM_BASE_URL=http://host.docker.internal:8787
+      - PYSTATA_SHIM_CONTAINER_WORKSPACE=/workspace
+      - PYSTATA_SHIM_HOST_WORKSPACE
+      - PYTHONPATH=/opt/pystata-shim-client
+    volumes:
+      - "${PYSTATA_SHIM_HOST_WORKSPACE:?set PYSTATA_SHIM_HOST_WORKSPACE to the host-side path of your workspace}:/workspace"
+      - "../../client:/opt/pystata-shim-client:ro"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - "bash"
+      - "-lc"
+      - |
+        set -eu
+        : "$${PYSTATA_SHIM_TOKEN:?set PYSTATA_SHIM_TOKEN to your host token}"
+        : "$${PYSTATA_SHIM_HOST_WORKSPACE:?set PYSTATA_SHIM_HOST_WORKSPACE to the host-side path of your workspace}"
+        python3 -c "import pystata_shim as s; print('health:', s.health_full())"
+        python3 -c "
+        import json
+        import pystata_shim as s
+        res = s.do(
+            'sysuse auto, clear\nreg price mpg',
+            capture=['e(N)', 'e(r2)'],
+            timeout_sec=120,
+            caller_tag='compose-example',
+        )
+        print(json.dumps({k: res[k] for k in ('ok', 'stata_rc', 'captured', 'duration_sec')}, indent=2))
+        "
