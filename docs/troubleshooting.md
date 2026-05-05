@@ -152,7 +152,17 @@ What to do:
   compatible with the new validation.
 - If you intentionally want the old unsafe behavior for a fully
   trusted setup, the host operator must explicitly opt in with
-  `PYSTATA_SHIM_ALLOW_UNSAFE_DO=1`.
+  `PYSTATA_SHIM_ALLOW_UNSAFE_DO=1` and re-render the LaunchAgent:
+
+  ```bash
+  PYSTATA_SHIM_ALLOW_UNSAFE_DO=1 bash host/scripts/setup_host.sh
+  ```
+
+  To switch back:
+
+  ```bash
+  PYSTATA_SHIM_ALLOW_UNSAFE_DO=0 bash host/scripts/setup_host.sh
+  ```
 
 ## `error_code: "timeout"`
 

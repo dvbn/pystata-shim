@@ -31,6 +31,7 @@ REPO_DIR="$(cd "${HOST_DIR}/.." && pwd)"
 : "${PYSTATA_SHIM_HOME:=$HOME/.pystata-shim}"
 : "${PYSTATA_SHIM_HOST:=127.0.0.1}"
 : "${PYSTATA_SHIM_PORT:=8787}"
+: "${PYSTATA_SHIM_ALLOW_UNSAFE_DO:=0}"
 : "${PYSTATA_EDITION:=mp}"
 : "${PYSTATA_UTILITIES:=/Applications/StataNow/utilities}"
 : "${PYSTATA_SHIM_POSTFLIGHT_TIMEOUT_SEC:=60}"
@@ -55,6 +56,14 @@ if ! command -v curl >/dev/null 2>&1; then
     echo "pystata-shim setup: setup can continue, but healthcheck.sh and the printed quick-check commands require curl." >&2
 fi
 
+case "${PYSTATA_SHIM_ALLOW_UNSAFE_DO}" in
+    0|1) ;;
+    *)
+        echo "pystata-shim setup: PYSTATA_SHIM_ALLOW_UNSAFE_DO must be 0 or 1." >&2
+        exit 1
+        ;;
+esac
+
 if [ ! -d "${PYSTATA_UTILITIES}" ]; then
     echo "pystata-shim setup: PYSTATA_UTILITIES (${PYSTATA_UTILITIES}) does not exist." >&2
     echo "pystata-shim setup: set PYSTATA_UTILITIES to your Stata install's utilities dir" >&2
@@ -65,6 +74,7 @@ fi
 echo "=== pystata-shim setup ==="
 echo "Shim home:       ${PYSTATA_SHIM_HOME}"
 echo "Bind:            ${PYSTATA_SHIM_HOST}:${PYSTATA_SHIM_PORT}"
+echo "Do validation:   $([ "${PYSTATA_SHIM_ALLOW_UNSAFE_DO}" = "1" ] && echo "disabled (trusted mode)" || echo "restricted")"
 echo "Edition:         ${PYSTATA_EDITION}"
 echo "Utilities:       ${PYSTATA_UTILITIES}"
 echo "Python:          ${PYTHON_BIN}"
@@ -146,6 +156,7 @@ echo "[5/6] Rendering launchd plist..."
     "${PYSTATA_SHIM_HOME}" \
     "${PYSTATA_SHIM_HOST}" \
     "${PYSTATA_SHIM_PORT}" \
+    "${PYSTATA_SHIM_ALLOW_UNSAFE_DO}" \
     "${PYSTATA_EDITION}" \
     "${PYSTATA_UTILITIES}" <<'PY_RENDER'
 import sys
@@ -156,14 +167,16 @@ import sys
     shim_home,
     shim_host,
     shim_port,
+    allow_unsafe_do,
     edition,
     utilities,
-) = sys.argv[1:10]
+) = sys.argv[1:11]
 subs = {
     "__START_SCRIPT__": start_script,
     "__PYSTATA_SHIM_HOME__": shim_home,
     "__PYSTATA_SHIM_HOST__": shim_host,
     "__PYSTATA_SHIM_PORT__": shim_port,
+    "__PYSTATA_SHIM_ALLOW_UNSAFE_DO__": allow_unsafe_do,
     "__PYSTATA_EDITION__": edition,
     "__PYSTATA_UTILITIES__": utilities,
 }

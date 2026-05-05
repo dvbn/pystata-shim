@@ -117,8 +117,10 @@ Check `error_code`:
   abbreviations; rejects macro-expanded command names it cannot
   inspect; and rejects dynamic `do` / `run` / `include` directives it
   cannot inspect.
-  If the host operator explicitly enabled `PYSTATA_SHIM_ALLOW_UNSAFE_DO=1`,
-  `shell` still runs on the host, not in the container.
+  If the host operator explicitly enabled trusted mode with
+  `PYSTATA_SHIM_ALLOW_UNSAFE_DO=1 bash host/scripts/setup_host.sh`,
+  `shell` and other host escapes run on the Mac as the host user, not
+  inside the container.
 
 ## How to confirm Stata actually ran
 

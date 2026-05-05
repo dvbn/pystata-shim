@@ -9,6 +9,8 @@
     __PYSTATA_SHIM_HOME__   $PYSTATA_SHIM_HOME
     __PYSTATA_SHIM_HOST__   bind host (default 127.0.0.1)
     __PYSTATA_SHIM_PORT__   bind port (default 8787)
+    __PYSTATA_SHIM_ALLOW_UNSAFE_DO__
+                            disable static .do validator (0|1, default 0)
     __PYSTATA_EDITION__     Stata edition (mp|se|be)
     __PYSTATA_UTILITIES__   path to Stata's utilities dir
 
@@ -55,6 +57,9 @@
 
         <key>PYSTATA_SHIM_PORT</key>
         <string>__PYSTATA_SHIM_PORT__</string>
+
+        <key>PYSTATA_SHIM_ALLOW_UNSAFE_DO</key>
+        <string>__PYSTATA_SHIM_ALLOW_UNSAFE_DO__</string>
 
         <key>PYSTATA_EDITION</key>
         <string>__PYSTATA_EDITION__</string>

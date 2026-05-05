@@ -135,6 +135,8 @@ requests.
     rejected because the shim cannot inspect them safely
   - hidden Unicode control / format characters are rejected
   - nested file inspection is capped at 16 levels and 1 MiB per file
+  To persist trusted mode under launchd, run
+  `PYSTATA_SHIM_ALLOW_UNSAFE_DO=1 bash host/scripts/setup_host.sh`.
 - `capture` is optional. Up to 128 entries. Each name must match
   `^[A-Za-z_][A-Za-z0-9_:.()]{0,127}$`. Locals and pattern
   fallbacks are out of scope in v1 — pass globals, scalars, and

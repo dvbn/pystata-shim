@@ -1,26 +1,9 @@
-# Python
 __pycache__/
-*.pyc
-*.pyo
-
-# pytest
+*.py[cod]
 .pytest_cache/
 
-# Agent/auditor working notes
-docs/reviews/
-docs/checkpoints/
-docs/IMPLEMENTATION_LOG.md
-docs/CHECKPOINT_LEDGER.md
-docs/CLAUDE_REVIEW_LEDGER.md
-logs/
-*.handoff.md
-*.handoff.txt
-
-# Local agent/editor metadata
-.codex/
-.claude/
-.cursor/
-
-# Local
 .DS_Store
 *.log
+.env
+.venv/
+venv/

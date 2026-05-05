@@ -8,6 +8,8 @@ that already has Stata. You end up with:
 - a 64-hex-character shared secret (32 bytes) in
   `~/.pystata-shim/token`
 - a venv under `~/.pystata-shim/venv/` (only fastapi, uvicorn, pydantic)
+- restricted `.do` validation by default, with an explicit trusted-mode
+  opt-in if you want Stata host escapes such as `shell` or `python`
 
 The shim never mutates your Stata install. It reads PyStata from the
 utilities directory you point it at, nothing more.
@@ -57,6 +59,7 @@ From a checkout of this repo:
 # Optional: override defaults; the defaults match StataNow + mp.
 export PYSTATA_EDITION=mp                           # mp | se | be
 export PYSTATA_UTILITIES=/Applications/StataNow/utilities
+export PYSTATA_SHIM_ALLOW_UNSAFE_DO=0               # 0 restricted, 1 trusted
 
 bash host/scripts/setup_host.sh
 ```
@@ -91,6 +94,30 @@ For the detailed, authenticated payload:
 
 ```bash
 bash host/scripts/healthcheck.sh --auth
+```
+
+## Restricted Mode Vs Trusted Mode
+
+By default, the shim runs in restricted mode. It rejects Stata code
+that uses direct host escapes (`shell`, `!`, `xshell`, `python`,
+`unix`, `winexec`, `javacall`, `mata`) or dynamic constructs the shim
+cannot inspect safely before execution.
+
+If you fully trust the container and want the older, less restrictive
+behavior, install or re-render the LaunchAgent with:
+
+```bash
+PYSTATA_SHIM_ALLOW_UNSAFE_DO=1 bash host/scripts/setup_host.sh
+```
+
+That disables the static `.do` validator. Stata host escapes then run
+on the Mac as your user account, not inside the container. The shared
+token should be treated as equivalent to shell access to your Mac.
+
+To return to restricted mode:
+
+```bash
+PYSTATA_SHIM_ALLOW_UNSAFE_DO=0 bash host/scripts/setup_host.sh
 ```
 
 ## Verifying end-to-end from your Mac

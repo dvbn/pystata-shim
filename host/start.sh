@@ -13,6 +13,7 @@
 #   PYSTATA_SHIM_PORT      (default: 8787)
 #   PYSTATA_SHIM_TOKEN     (optional; falls back to $PYSTATA_SHIM_HOME/token)
 #   PYSTATA_SHIM_ALLOW_NON_LOOPBACK  (set to 1 to allow non-loopback bind)
+#   PYSTATA_SHIM_ALLOW_UNSAFE_DO     (set to 1 to allow host escapes in .do code)
 #   PYSTATA_EDITION        (default: mp)
 #   PYSTATA_UTILITIES      (default: /Applications/StataNow/utilities)
 set -euo pipefail
@@ -20,10 +21,11 @@ set -euo pipefail
 : "${PYSTATA_SHIM_HOME:=$HOME/.pystata-shim}"
 : "${PYSTATA_SHIM_HOST:=127.0.0.1}"
 : "${PYSTATA_SHIM_PORT:=8787}"
+: "${PYSTATA_SHIM_ALLOW_UNSAFE_DO:=0}"
 : "${PYSTATA_EDITION:=mp}"
 : "${PYSTATA_UTILITIES:=/Applications/StataNow/utilities}"
 
-export PYSTATA_SHIM_HOME PYSTATA_SHIM_HOST PYSTATA_SHIM_PORT PYSTATA_EDITION PYSTATA_UTILITIES
+export PYSTATA_SHIM_HOME PYSTATA_SHIM_HOST PYSTATA_SHIM_PORT PYSTATA_SHIM_ALLOW_UNSAFE_DO PYSTATA_EDITION PYSTATA_UTILITIES
 
 case "${PYSTATA_SHIM_HOST}" in
     127.0.0.1|localhost|::1) ;;

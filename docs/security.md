@@ -86,6 +86,27 @@ The shim is designed to be:
 - Bind is refused on non-loopback addresses unless explicitly
   allowed (no TLS on this transport).
 
+## Trusted Mode
+
+The default mode is intentionally conservative. For fully trusted
+setups, you can opt into the older, less restrictive behavior:
+
+```bash
+PYSTATA_SHIM_ALLOW_UNSAFE_DO=1 bash host/scripts/setup_host.sh
+```
+
+This persists `PYSTATA_SHIM_ALLOW_UNSAFE_DO=1` into the launchd
+environment and restarts the shim. In trusted mode, the static `.do`
+validator is disabled, so Stata host escapes such as `shell`, `!`,
+`xshell`, `python`, `unix`, `winexec`, `javacall`, and `mata` are
+allowed. Those commands run on the Mac as your user account.
+
+Return to restricted mode with:
+
+```bash
+PYSTATA_SHIM_ALLOW_UNSAFE_DO=0 bash host/scripts/setup_host.sh
+```
+
 ## Where the token is exposed even when used correctly
 
 Once the token is set on a running container, it lives in that
