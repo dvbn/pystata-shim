@@ -1147,12 +1147,14 @@ app = FastAPI(title="pystata-shim", version="1.0.0")
 def on_startup() -> None:
     _prune_old_runs()
     _warn_if_audit_log_huge()
-    # Skip the warm-up when told to (smoke tests, CI without PyStata).
-    if os.environ.get("PYSTATA_SHIM_SKIP_WARMUP") == "1":
+    # Default contract for the container-session lifecycle: starting the
+    # HTTP shim must not initialize Stata until an explicit health probe
+    # or a real job is requested. The legacy PYSTATA_SHIM_SKIP_WARMUP=1
+    # is still honored as a no-op for back-compat with older recipes.
+    if os.environ.get("PYSTATA_SHIM_WARMUP") != "1":
         return
-    # Warm the health cache off the critical path so uvicorn binds the
-    # socket immediately. The first probe may still be slow, but at least
-    # it does not block the listen socket.
+    # Operator opted into eager warm-up. Run it off the listen path so
+    # uvicorn binds the socket immediately even if PyStata import is slow.
     threading.Thread(
         target=lambda: SUPERVISOR.health(include_detail=False),
         name="pystata-shim-warmup",
@@ -1162,8 +1164,22 @@ def on_startup() -> None:
 
 # --- Routes --------------------------------------------------------------
 
+@app.get("/status")
+def status(x_shim_token: str | None = Header(default=None)) -> JSONResponse:
+    # Cheap status: never probes PyStata. Reports whether the API
+    # process is alive and whether a probe cache exists. This is the
+    # endpoint that lifecycle scripts and orchestrators should poll.
+    include_detail = bool(
+        x_shim_token and secrets.compare_digest(x_shim_token, _EXPECTED_TOKEN)
+    )
+    payload = SUPERVISOR.status(include_detail=include_detail)
+    return JSONResponse(status_code=200, content=payload)
+
+
 @app.get("/health")
 def health(x_shim_token: str | None = Header(default=None)) -> JSONResponse:
+    # /health may probe PyStata when the cache is stale. Use /status if
+    # you only need to know whether the HTTP server is alive.
     include_detail = bool(
         x_shim_token and secrets.compare_digest(x_shim_token, _EXPECTED_TOKEN)
     )

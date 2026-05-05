@@ -93,18 +93,24 @@ setups, you can opt into the older, less restrictive behavior:
 
 ```bash
 PYSTATA_SHIM_ALLOW_UNSAFE_DO=1 bash host/scripts/setup_host.sh
+bash host/scripts/shimctl.sh stop
+bash host/scripts/shimctl.sh start
 ```
 
-This persists `PYSTATA_SHIM_ALLOW_UNSAFE_DO=1` into the launchd
-environment and restarts the shim. In trusted mode, the static `.do`
-validator is disabled, so Stata host escapes such as `shell`, `!`,
-`xshell`, `python`, `unix`, `winexec`, `javacall`, and `mata` are
-allowed. Those commands run on the Mac as your user account.
+The setup script records the mode for the next start; `shimctl.sh
+stop && start` (or, in the opt-in launchd path, `launchctl kickstart
+-k`) reloads the shim against the new value. In trusted mode, the
+static `.do` validator is disabled, so Stata host escapes such as
+`shell`, `!`, `xshell`, `python`, `unix`, `winexec`, `javacall`, and
+`mata` are allowed. Those commands run on the Mac as your user
+account.
 
 Return to restricted mode with:
 
 ```bash
 PYSTATA_SHIM_ALLOW_UNSAFE_DO=0 bash host/scripts/setup_host.sh
+bash host/scripts/shimctl.sh stop
+bash host/scripts/shimctl.sh start
 ```
 
 ## Where the token is exposed even when used correctly

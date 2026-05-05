@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Bring up a python:3.12-slim container wired to the host pystata-shim.
 #
-# Assumes you have already run host/scripts/setup_host.sh on this Mac
-# and that the shim launch agent is up.
+# Assumes you have already run host/scripts/setup_host.sh on this Mac.
+#
+# This example uses the host shim's container-session lifecycle:
+# - we start the shim before the container with shimctl.sh start
+# - we stop the shim after the container exits (only if no other labeled
+#   containers are running) with shimctl.sh stop-if-unused
+# The container carries the `com.pystata.shim.enabled=true` label so
+# stop-if-unused can find it.
 #
 # Token-handling note:
 # The shared secret is RCE-equivalent for your Mac. We do NOT pass the
@@ -24,11 +30,20 @@ export PYSTATA_SHIM_TOKEN
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLIENT_DIR="$(cd "${SCRIPT_DIR}/../../client" && pwd)"
+SHIMCTL="$(cd "${SCRIPT_DIR}/../../host/scripts" && pwd)/shimctl.sh"
 WORK_DIR="$(pwd)"
+
+# Start the host shim if it is not already running.
+bash "${SHIMCTL}" start
+
+# Stop-if-unused on exit (success or failure). Will leave the shim
+# running if any other com.pystata.shim.enabled=true container exists.
+trap 'bash "${SHIMCTL}" stop-if-unused || true' EXIT
 
 # `-e PYSTATA_SHIM_TOKEN` (no `=value`) tells docker to read the value
 # from our exported env. The literal token never appears in argv.
 docker run --rm \
+    --label com.pystata.shim.enabled=true \
     -e PYSTATA_SHIM_TOKEN \
     -e PYSTATA_SHIM_HOST_WORKSPACE="${WORK_DIR}" \
     -e PYSTATA_SHIM_CONTAINER_WORKSPACE="/workspace" \

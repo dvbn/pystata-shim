@@ -3,58 +3,60 @@
 ## "The shim is not running at all"
 
 This is the most common first-time failure. Symptoms: `curl
-http://127.0.0.1:8787/health` fails immediately with "connection
-refused", and `~/.pystata-shim/shim.stderr.log` either does not
-exist or has an error in it.
+http://127.0.0.1:8787/status` fails immediately with "connection
+refused", and `shimctl.sh status` reports `stopped`.
 
 Diagnostic flow, in order:
 
 ```bash
 # 1. Was setup_host.sh ever run?
-ls -la ~/.pystata-shim/ ~/Library/LaunchAgents/com.pystata.shim.plist 2>&1
+ls -la ~/.pystata-shim/
 
-# 2. Is the launch agent loaded?
-launchctl print "gui/$(id -u)/com.pystata.shim" 2>&1 | head -10
+# 2. What does shimctl think the state is?
+bash host/scripts/shimctl.sh status
 
-# 3. Why did it die?
+# 3. Try to start it (or re-start after a crash).
+bash host/scripts/shimctl.sh start
+
+# 4. If start failed, why?
 tail -40 ~/.pystata-shim/shim.stderr.log 2>&1
 ```
 
 What the outputs mean:
 
-- step 1 fails → `setup_host.sh` was never run (or didn't
-  finish). Re-run it from the repo: `bash host/scripts/setup_host.sh`.
-- step 2 says "could not find service" → the plist exists but is
-  not loaded. `launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.pystata.shim.plist`
-  then re-check.
-- step 3 has a `pystata-shim:` line with a real error → fix that
-  specific error (token-file mode, edition, utilities path),
-  re-run `setup_host.sh` (idempotent), recheck.
+- step 1 fails (the directory does not exist) → `setup_host.sh`
+  was never run (or didn't finish). Re-run it from the repo:
+  `bash host/scripts/setup_host.sh`.
+- step 2 prints `stopped` and step 3 prints `started pid=...
+  url=...` → the shim is up; re-test your client.
+- step 3 prints `timed out waiting for ...` → step 4 should show
+  the real error (token-file mode, edition, utilities path).
+  Fix the error, re-run `setup_host.sh` (idempotent), then
+  `shimctl.sh start` again.
 
-If step 3 is empty but the agent is loaded and listening — check
-that you're hitting the right port:
+If the shim claims it's running but nothing answers on 8787:
 
 ```bash
 lsof -nP -iTCP:8787 -sTCP:LISTEN 2>&1
 ```
 
-If nothing answers on 8787 but the agent is up, you set
-`PYSTATA_SHIM_PORT` to something else; check the plist.
+If nothing answers on 8787, you set `PYSTATA_SHIM_PORT` to something
+else; pass the matching port via `PYSTATA_SHIM_PORT` to `shimctl.sh
+status` so it polls the right URL.
 
-## The launch agent installs but the shim never comes up
+## The shim starts, then exits immediately
 
 Symptoms:
 
-- `curl http://127.0.0.1:8787/health` fails with "connection refused"
-- `launchctl print gui/$(id -u)/com.pystata.shim` shows the agent
-  alive but the uvicorn process is missing
+- `shimctl.sh start` prints `started pid=...` but the next
+  `shimctl.sh status` says `stopped`
+- `~/.pystata-shim/shim.stderr.log` contains a one-line error
 
 Check:
 
-- `~/.pystata-shim/shim.stderr.log` — the server logs a one-line
-  error and exits if the token is missing, the token file has wrong
-  permissions, or the non-loopback bind was attempted without the
-  override.
+- the server logs a one-line error and exits if the token is missing,
+  the token file has wrong permissions, or a non-loopback bind was
+  attempted without the override.
 - If you see "token file is mode XXX" — run
   `chmod 600 ~/.pystata-shim/token`.
 - If you see "PYSTATA_SHIM_TOKEN must be set ... at least 32
@@ -64,13 +66,15 @@ Check:
   non-loopback risk by setting `PYSTATA_SHIM_ALLOW_NON_LOOPBACK=1`.
 - If you see `address already in use` — another process already owns
   port 8787. Identify it with
-  `lsof -nP -iTCP:8787 -sTCP:LISTEN`. If it is an older shim launch
-  agent, unload that old agent before re-running setup. For example:
+  `lsof -nP -iTCP:8787 -sTCP:LISTEN`. If it is an older shim install
+  (a persistent launch agent from a previous version of this repo),
+  unload that old agent before re-running setup:
 
   ```bash
   launchctl list | grep -i 'stata\|shim\|pystata'
   launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/<old-label>.plist
   bash host/scripts/setup_host.sh
+  bash host/scripts/shimctl.sh start
   ```
 
 ## `/health` returns `"pool_state": "uninitialized"` forever
@@ -98,8 +102,8 @@ the real failure string.
 Common causes:
 
 - Wrong `PYSTATA_UTILITIES` — set it to the `utilities` directory of
-  your Stata install. Restart the launch agent after editing the
-  plist.
+  your Stata install. Re-run `setup_host.sh` (idempotent) and then
+  `shimctl.sh stop && shimctl.sh start` to pick up the new value.
 - Missing Stata license (look for `license_error`).
 - Python version inside the venv is too old for pydantic/FastAPI.
 
@@ -112,8 +116,9 @@ needed on Docker Desktop or OrbStack.
 
 ## Container: connection refused or timed out
 
-- Is the host launch agent running?
-  `launchctl print gui/$(id -u)/com.pystata.shim`
+- Is the host shim running? `bash host/scripts/shimctl.sh status`
+  should print `running ...`. If it says `stopped`, run
+  `bash host/scripts/shimctl.sh start` first.
 - Is the container networked? `--network=none` cannot reach the host.
 - Is the host binding loopback? Non-loopback binds take a separate
   env-var override.
@@ -152,16 +157,20 @@ What to do:
   compatible with the new validation.
 - If you intentionally want the old unsafe behavior for a fully
   trusted setup, the host operator must explicitly opt in with
-  `PYSTATA_SHIM_ALLOW_UNSAFE_DO=1` and re-render the LaunchAgent:
+  `PYSTATA_SHIM_ALLOW_UNSAFE_DO=1` and re-run setup + restart the shim:
 
   ```bash
   PYSTATA_SHIM_ALLOW_UNSAFE_DO=1 bash host/scripts/setup_host.sh
+  bash host/scripts/shimctl.sh stop
+  bash host/scripts/shimctl.sh start
   ```
 
   To switch back:
 
   ```bash
   PYSTATA_SHIM_ALLOW_UNSAFE_DO=0 bash host/scripts/setup_host.sh
+  bash host/scripts/shimctl.sh stop
+  bash host/scripts/shimctl.sh start
   ```
 
 ## `error_code: "timeout"`
@@ -234,7 +243,7 @@ That is expected for a `.do` file that produces no output. Pass
 
 ## Log files are growing without bound
 
-The launch agent's `StandardOutPath` and `StandardErrorPath` never
+`~/.pystata-shim/shim.stdout.log` and `shim.stderr.log` never
 rotate on their own. For long-lived installs, either truncate the
 logs periodically or add a `newsyslog` entry. Per-job directories
 under `$PYSTATA_SHIM_HOME/runs/` are pruned at server startup on a
@@ -242,11 +251,12 @@ under `$PYSTATA_SHIM_HOME/runs/` are pruned at server startup on a
 
 ## I changed the token but old calls still work
 
-The token is read once at server startup. Restart the launch agent
-after rotating the token:
+The token is read once at server startup. Restart the shim after
+rotating the token:
 
 ```bash
-launchctl kickstart -k "gui/$(id -u)/com.pystata.shim"
+bash host/scripts/shimctl.sh stop
+bash host/scripts/shimctl.sh start
 ```
 
 ## Mac went to sleep mid-job; client timed out
@@ -259,9 +269,9 @@ wake:
   worker; the parent shim's timeout fires when the wallclock
   catches up
 - the supervisor returns `error_code: "timeout"` to the client
-- subsequent `/health` should return `ok: true` again within a
-  few seconds; if not, kick the agent:
-  `launchctl kickstart -k "gui/$(id -u)/com.pystata.shim"`
+- subsequent `/status` should return `ok: true` again within a
+  few seconds; if not, restart the shim:
+  `bash host/scripts/shimctl.sh stop && bash host/scripts/shimctl.sh start`
 
 For long jobs, either disable display sleep
 (System Settings → Displays → "Prevent automatic sleeping when

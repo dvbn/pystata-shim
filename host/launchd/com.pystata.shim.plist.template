@@ -4,6 +4,25 @@
 <!--
   launchd agent template for pystata-shim.
 
+  Use of this plist is OPT-IN. By default, host/scripts/setup_host.sh
+  prepares the host runtime but does NOT install or load this agent —
+  the shim is started per container session by host/scripts/shimctl.sh
+  instead. Install this agent only if you specifically want
+  manually-controlled, non-persistent shim launches via launchctl, or
+  you are wiring it into a non-`shimctl` workflow.
+
+  Even when this agent is installed, RunAtLoad and KeepAlive are NOT
+  set by default. The shim will not auto-start at login and will not
+  be respawned on exit. To opt into login-time start, add:
+
+      <key>RunAtLoad</key>
+      <true/>
+
+  and to opt into automatic respawn:
+
+      <key>KeepAlive</key>
+      <true/>
+
   Placeholders are replaced by host/scripts/setup_host.sh:
     __START_SCRIPT__        path to $PYSTATA_SHIM_HOME/start.sh
     __PYSTATA_SHIM_HOME__   $PYSTATA_SHIM_HOME
@@ -35,11 +54,8 @@
     <key>WorkingDirectory</key>
     <string>__PYSTATA_SHIM_HOME__</string>
 
-    <key>RunAtLoad</key>
-    <true/>
-
-    <key>KeepAlive</key>
-    <true/>
+    <!-- RunAtLoad and KeepAlive deliberately NOT set: this agent runs
+         only when launchctl kickstart is called, not at login. -->
 
     <key>ThrottleInterval</key>
     <integer>30</integer>

@@ -45,14 +45,19 @@ Python package, or a general workflow framework.
 From a checkout of this repo on your Mac:
 
 ```bash
-bash host/scripts/setup_host.sh
-bash host/scripts/healthcheck.sh
-bash examples/docker-run/run.sh
+bash host/scripts/setup_host.sh        # prepare host runtime (no daemon)
+bash host/scripts/shimctl.sh start     # start the shim for this session
+bash host/scripts/healthcheck.sh --auth
+bash examples/docker-run/run.sh        # the example calls shimctl itself
+bash host/scripts/shimctl.sh stop-if-unused
 ```
 
-The setup script installs the host shim under `~/.pystata-shim/`,
-creates a launch agent, generates a token, and waits for authenticated
-health to succeed.
+`setup_host.sh` only prepares files under `~/.pystata-shim/` and writes
+a token. It does **not** install a login-time daemon. The shim runs only
+while a container session needs it: `shimctl.sh start` brings it up,
+`shimctl.sh stop-if-unused` brings it down once no labeled container is
+left. `examples/docker-run/run.sh` already wraps both, so for the
+canonical regression you only need `setup_host.sh` and the example.
 
 If your Stata install is not at the default StataNow path, set
 `PYSTATA_UTILITIES` before setup:
@@ -69,18 +74,26 @@ PYSTATA_EDITION=se PYSTATA_UTILITIES=/Applications/Stata/utilities \
     bash host/scripts/setup_host.sh
 ```
 
+If you specifically want a launchd-managed shim (instead of `shimctl`),
+re-run setup with `INSTALL_LAUNCH_AGENT=1`. The agent ships **without**
+`RunAtLoad`/`KeepAlive`, so it still does not run at login — see
+[docs/setup-macos.md](docs/setup-macos.md) for the persistent variant.
+
 For a slower walkthrough, start with
 [docs/getting-started.md](docs/getting-started.md).
 
 ## Using It From A Container
 
 Mount your project at `/workspace`, mount this repo's `client/`
-directory, and pass the token by environment variable name:
+directory, label the container with `com.pystata.shim.enabled=true`,
+and pass the token by environment variable name:
 
 ```bash
+bash host/scripts/shimctl.sh start
 export PYSTATA_SHIM_TOKEN="$(cat ~/.pystata-shim/token)"
 
 docker run --rm -it \
+  --label com.pystata.shim.enabled=true \
   -e PYSTATA_SHIM_TOKEN \
   -e PYSTATA_SHIM_HOST_WORKSPACE="$(pwd)" \
   -v "$(pwd):/workspace" \
@@ -91,6 +104,8 @@ docker run --rm -it \
     export PYTHONPATH=/opt/pystata-shim-client
     stata-do --health
   '
+
+bash host/scripts/shimctl.sh stop-if-unused
 ```
 
 Then run a `.do` file:
@@ -98,6 +113,11 @@ Then run a `.do` file:
 ```bash
 stata-do /workspace/analysis/main.do --cwd /workspace
 ```
+
+If you already drive containers with `just`, copy
+[`examples/justfile/Justfile`](examples/justfile/Justfile) into your
+project and you get `just create`/`start`/`stop`/`shell` recipes that
+handle shim lifecycle for you.
 
 For container details, see [docs/docker.md](docs/docker.md). For
 agent-specific rules, see [docs/agent-guidance.md](docs/agent-guidance.md).
@@ -140,6 +160,7 @@ client/                     container-side Python client and stata-do CLI
 docs/                       setup, architecture, Docker, and security docs
 examples/docker-run/        runnable docker run smoke example
 examples/docker-compose/    compose equivalent of the docker-run example
+examples/justfile/          Justfile wrapper recipes (per-session lifecycle)
 examples/claude/            Claude Code container wiring notes
 examples/codex/             Codex-style container wiring notes
 tests/smoke/                Stata-free smoke tests for the shim layer

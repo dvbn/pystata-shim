@@ -25,17 +25,19 @@ read along here as it works.
   venv installs `pydantic>=2`, which pins the floor.
 
 You do **not** need to know what a Dockerfile is, what an image
-is, what `host.docker.internal` is, or what a launch agent is.
-This page explains each as it comes up.
+is, or what `host.docker.internal` is. This page explains each as
+it comes up.
 
 ---
 
 ## What you'll have at the end
 
-- A small **launch agent** running on your Mac in the background
-  that exposes a Stata "run this code" service on `127.0.0.1:8787`.
-  It only ever listens on the loopback interface — nothing outside
-  your Mac can reach it.
+- A small **HTTP shim** that runs on your Mac while a container
+  session is up. It exposes a Stata "run this code" service on
+  `127.0.0.1:8787` only — nothing outside your Mac can reach it.
+  You start it for a session with `host/scripts/shimctl.sh start`
+  and stop it with `shimctl.sh stop` (or, in the example wrappers,
+  the container's stop recipe handles that for you).
 - A **shared-secret token** in `~/.pystata-shim/token` (mode `0600`)
   that authenticates calls to that service.
 - A **Docker container** of your choice (we use a one-line example
@@ -144,21 +146,20 @@ cd ~/Code/pystata-shim
 
 ---
 
-## Step 3 — Install the host shim
+## Step 3 — Prepare the host shim
 
-This is one command, but it does six things:
+This is one command, and it just gets the host runtime ready — it
+does **not** start a daemon. You start the shim per session yourself
+in the next step (or your container wrapper does it for you):
 
 ```bash
 bash host/scripts/setup_host.sh
 ```
 
 You should see a header showing where the shim home is, the bind
-address, the edition, and the utilities path; six numbered steps;
-an `authenticated health ok` postflight line; and a final
-`Setup complete.` line. If launchd accepts the agent but the shim
-does not become healthy, the script exits non-zero and prints the
-shim stderr tail plus any process already listening on the configured
-port.
+address, the edition, and the utilities path; five numbered steps;
+and a final block of next-step commands ending in `bash
+host/scripts/shimctl.sh start`.
 
 This script:
 
@@ -168,12 +169,15 @@ This script:
    `uvicorn`, and `pydantic` installed (only ~30 MB).
 4. Generates a 64-hex-character shared secret (32 bytes) in
    `~/.pystata-shim/token` with mode `0600`.
-5. Renders a **launchd** agent plist into
-   `~/Library/LaunchAgents/com.pystata.shim.plist`. launchd is
-   macOS's built-in service manager — think systemd but Apple-
-   shaped. The agent runs as your user account, not root.
-6. Loads the agent so it starts automatically and stays alive
-   across reboots.
+5. Confirms the lifecycle script (`host/scripts/shimctl.sh`) and
+   `start.sh` are present and prints what to run next.
+
+There is no launchd plist installed by default. The shim is a
+**container-session service**: it runs while a container needs it
+and stops when the container is done. If you specifically want a
+launchd-managed install, re-run with `INSTALL_LAUNCH_AGENT=1` —
+even then, the agent ships without `RunAtLoad`, so it does not
+start at login. See [setup-macos.md](setup-macos.md#opt-in-install-a-launch-agent).
 
 > **If your Stata isn't StataNow:** stop, set the env var inline
 > (no `export`) and re-run. The script is idempotent.
@@ -197,7 +201,19 @@ This script:
 
 ---
 
-## Step 4 — Verify the shim is alive
+## Step 4 — Start the shim and verify it is alive
+
+Bring it up:
+
+```bash
+bash host/scripts/shimctl.sh start
+```
+
+The script forks the shim into the background, writes its PID to
+`~/.pystata-shim/shim.pid`, and waits up to 15 seconds for the
+HTTP listener to come up. On success it prints the URL and the PID.
+
+Now check it:
 
 ```bash
 bash host/scripts/healthcheck.sh
@@ -219,7 +235,17 @@ bash host/scripts/healthcheck.sh --auth
 The most common reason this fails the first time:
 `PYSTATA_UTILITIES` points at the wrong directory, or
 `PYSTATA_EDITION` doesn't match your license. Fix the env var,
-re-run `setup_host.sh`, retry.
+re-run `setup_host.sh`, then `shimctl.sh stop && shimctl.sh start`.
+
+You can also check the shim's lifecycle state any time:
+
+```bash
+bash host/scripts/shimctl.sh status
+```
+
+The first whitespace-separated token of the output is one of
+`running`, `stopped`, or `unknown`, so you can grep it from a
+script.
 
 ---
 
@@ -232,7 +258,8 @@ root:
 bash examples/docker-run/run.sh
 ```
 
-This pulls `python:3.12-slim` (a tiny base image), bind-mounts the
+This pulls `python:3.12-slim` (a tiny base image), labels the
+container with `com.pystata.shim.enabled=true`, bind-mounts the
 current directory at `/workspace`, sets the four env vars the
 client needs, and runs:
 
@@ -261,7 +288,9 @@ few digits.)
 That's the whole loop. Container ran a Python script. Python
 script sent `.do` code to your Mac's Stata via HTTP. Stata ran the
 regression. Captured `e(N)` and `e(r2)` came back to the
-container.
+container. The example also calls `shimctl.sh stop-if-unused` on
+exit, so when no other labeled container is running the shim
+shuts down cleanly.
 
 ---
 
@@ -294,8 +323,8 @@ The single most useful command:
 tail -f ~/.pystata-shim/shim.stderr.log
 ```
 
-That's where the shim writes its boot errors. If the launch agent
-won't start, this is the first place to look.
+That's where the shim writes its boot errors. If
+`shimctl.sh start` fails, this is the first place to look.
 
 Then [troubleshooting.md](troubleshooting.md) has a
 symptom-by-symptom flow covering:
@@ -316,13 +345,16 @@ symptom-by-symptom flow covering:
 If you decide this isn't for you and want to remove every trace:
 
 ```bash
-launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.pystata.shim.plist
-rm ~/Library/LaunchAgents/com.pystata.shim.plist
+bash host/scripts/shimctl.sh stop
+# Only if you ever ran INSTALL_LAUNCH_AGENT=1:
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.pystata.shim.plist 2>/dev/null || true
+rm -f ~/Library/LaunchAgents/com.pystata.shim.plist
 rm -rf ~/.pystata-shim
 # If you ever ran sync_stata_mirrors.sh, also:
 rm -rf /Users/Shared/stata-mirrors
 ```
 
-That removes the launch agent, the plist, the token, the venv, the
-audit log, and any optional Stata mirror you may have created.
-Nothing else on your system was touched.
+That stops the shim, removes any launch agent you may have opted
+into, the plist, the token, the venv, the audit log, and any
+optional Stata mirror you may have created. Nothing else on your
+system was touched.

@@ -77,6 +77,44 @@ Container (Linux)                        Host (macOS)
    scripts read your local Stata install and copy its readable files
    into a directory you own. No Stata binaries, no `.ado` files, no
    manuals are shipped from this repo.
+8. **The shim is a container-session service, not a login-time
+   daemon.** `setup_host.sh` only prepares the host runtime; the
+   shim itself is started per session by `host/scripts/shimctl.sh`
+   (or by an opt-in launchd install that ships without `RunAtLoad`).
+   Starting the HTTP server does not initialize Stata until an
+   explicit `/health` call or a real `/do` job arrives.
+
+## Lifecycle
+
+Setup and runtime are deliberately separated:
+
+- `host/scripts/setup_host.sh` prepares the host runtime under
+  `~/.pystata-shim/` (venv, app/worker copies, token,
+  `start.sh`). It does not start the shim and does not install a
+  login-time daemon. It is idempotent and safe to re-run.
+- `host/scripts/shimctl.sh` is the entry point that starts and
+  stops the shim:
+  - `shimctl.sh start` — fork the shim into the background, write
+    a PID file, wait up to 15 s for `/status` to respond.
+  - `shimctl.sh stop` — terminate via PID file (`SIGTERM`, then
+    `SIGKILL` after 8 s grace).
+  - `shimctl.sh status` — report `running` / `stopped` /
+    `unknown`, machine-friendly first whitespace token.
+  - `shimctl.sh stop-if-unused` — only stop the shim when no
+    Docker containers labeled
+    `com.pystata.shim.enabled=true` are running. Conservative
+    when Docker is unreachable: leaves the shim alone.
+- Container wrappers should:
+  1. Add `--label com.pystata.shim.enabled=true` at create time,
+  2. Call `shimctl.sh start` before the container needs the shim,
+  3. Call `shimctl.sh stop-if-unused` when the container exits.
+
+`examples/docker-run/run.sh` and `examples/justfile/Justfile` show
+the full pattern. Plain `docker stop <name>` bypasses the wrapper
+and leaves the host shim running — which is fine, but means the
+shim sits idle until something else calls `stop` or
+`stop-if-unused`. There is no host-side watcher in v1; the contract
+is wrapper-level cooperation, not Docker-events surveillance.
 
 ## Transport
 
@@ -98,17 +136,41 @@ Container (Linux)                        Host (macOS)
 
 | Method | Path              | Auth | Purpose                                    |
 |--------|-------------------|------|--------------------------------------------|
-| GET    | `/health`         | no\* | Probe Stata init + pool state              |
+| GET    | `/status`         | no\* | Cheap state read; **never** probes PyStata |
+| GET    | `/health`         | no\* | State read; may probe PyStata if cache stale |
 | POST   | `/do`             | yes  | Run a `.do` code snippet                   |
 | GET    | `/job/{job_id}`   | yes  | Live status of a currently-running job     |
 | POST   | `/cancel/{job_id}`| yes  | Terminate a running job                    |
 
-\* The unauthenticated `GET /health` payload is minimal: `ok`,
-`pool_state`, `queue_depth`. To see diagnostic detail
-(`edition`, `stata_version_number`, `error_code`, `init_error`,
-`current_job_id`), call
-`GET /health` with the same `X-Shim-Token` header used for mutating
-requests.
+\* The unauthenticated `GET /status` and `GET /health` payloads are
+both minimal: `ok`, `pool_state`, `queue_depth`. To see diagnostic
+detail (`edition`, `stata_version_number`, `error_code`,
+`init_error`, `current_job_id`), call either endpoint with the same
+`X-Shim-Token` header used for mutating requests.
+
+Use `/status` when you only need to know whether the HTTP server is
+alive — it never spawns a Stata worker, so it stays cheap even when
+PyStata is slow to boot. The container-lifecycle script
+(`shimctl.sh`) polls `/status` exactly because of this.
+
+`/health` may run a PyStata probe when its cached probe is stale
+(older than 30 s) and no job is running. Use it when you specifically
+want to confirm Stata can initialize, or when you want
+`stata_version_number` to be populated on a fresh install. The first
+call after the shim starts is the slow one (Stata boot); subsequent
+calls within 30 s return the cached probe instantly.
+
+Starting the HTTP shim does **not** initialize Stata. The first
+PyStata probe runs only when an explicit `/health` call or a real
+`/do` job arrives. Operators who want eager warm-up at start can set
+`PYSTATA_SHIM_WARMUP=1` in the shim's env; the warm-up then runs in
+a background thread off the listen path.
+
+Warm-up is best-effort. The thread tries to acquire the worker slot
+non-blocking; if a real `/do` request lands first and wins the slot,
+the warm-up thread exits without probing and the `/do` pays the
+init cost. This is intentional — never block a real job on a
+diagnostic probe.
 
 ### `/do` body
 
@@ -135,8 +197,10 @@ requests.
     rejected because the shim cannot inspect them safely
   - hidden Unicode control / format characters are rejected
   - nested file inspection is capped at 16 levels and 1 MiB per file
-  To persist trusted mode under launchd, run
-  `PYSTATA_SHIM_ALLOW_UNSAFE_DO=1 bash host/scripts/setup_host.sh`.
+  To persist trusted mode for the next `shimctl.sh start` (or for an
+  opt-in launchd install), run
+  `PYSTATA_SHIM_ALLOW_UNSAFE_DO=1 bash host/scripts/setup_host.sh`
+  and then `shimctl.sh stop && shimctl.sh start`.
 - `capture` is optional. Up to 128 entries. Each name must match
   `^[A-Za-z_][A-Za-z0-9_:.()]{0,127}$`. Locals and pattern
   fallbacks are out of scope in v1 — pass globals, scalars, and

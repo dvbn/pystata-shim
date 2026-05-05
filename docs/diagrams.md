@@ -35,15 +35,17 @@ flowchart LR
     end
 
     subgraph HOST["macOS host"]
-        LAUNCHD["launchd agent<br/>com.pystata.shim"]
+        SHIMCTL["host/scripts/shimctl.sh<br/>start / stop / stop-if-unused"]
         APP["host/app.py<br/>FastAPI<br/>127.0.0.1:8787"]
         WORKER["host/worker.py<br/>(spawned per job)"]
         STATA["Stata<br/>via PyStata"]
         TOKEN["~/.pystata-shim/token<br/>(0600)"]
+        PIDFILE["~/.pystata-shim/shim.pid"]
         AUDIT["~/.pystata-shim/audit.jsonl"]
         HOSTWS["/Users/you/project<br/>(your project dir)"]
 
-        LAUNCHD -->|starts/keeps alive| APP
+        SHIMCTL -->|starts in background| APP
+        SHIMCTL -.->|writes/reads| PIDFILE
         APP -->|reads at boot| TOKEN
         APP -->|spawn subprocess| WORKER
         WORKER -->|import pystata| STATA
@@ -58,9 +60,15 @@ flowchart LR
     classDef boundary fill:#fef9c3,stroke:#a16207,stroke-width:2px
     classDef host fill:#dcfce7,stroke:#15803d
     classDef container fill:#dbeafe,stroke:#1d4ed8
-    class APP,WORKER,STATA,LAUNCHD,TOKEN,AUDIT,HOSTWS host
+    class APP,WORKER,STATA,SHIMCTL,TOKEN,PIDFILE,AUDIT,HOSTWS host
     class A,CLI,CLIENT,WS container
 ```
+
+The container session and the shim run together: a wrapper recipe
+(see `examples/justfile/Justfile` or `examples/docker-run/run.sh`)
+calls `shimctl start` before the container starts and
+`shimctl stop-if-unused` after it exits, so the shim is up only
+while a labeled container needs it.
 
 Reading rules:
 
@@ -199,7 +207,7 @@ Question: what does `pool_state` mean, and how does it change?
 
 ```mermaid
 stateDiagram-v2
-    [*] --> uninitialized: server boots,<br/>warm-up scheduled
+    [*] --> uninitialized: server boots,<br/>Stata init deferred
     uninitialized --> ready: probe succeeds<br/>(PyStata.init OK)
     uninitialized --> uninitialized: probe fails<br/>(license/edition)
     uninitialized --> degraded: 3 worker crashes<br/>in 10 min

@@ -74,11 +74,19 @@ needs the `--add-host` flag above.
 The snippet below mounts `$(pwd)/client` assuming you are standing at
 the repo root. Adjust the path if you run it from elsewhere.
 
+The container is labeled `com.pystata.shim.enabled=true` so that
+`shimctl.sh stop-if-unused` can identify it as a shim consumer when
+deciding whether to stop the host shim. If you skip the label, the
+container still works, but `stop-if-unused` cannot account for it
+and will treat it as if no labeled container is running.
+
 
 ```bash
+bash host/scripts/shimctl.sh start
 export PYSTATA_SHIM_TOKEN="$(cat ~/.pystata-shim/token)"
 
 docker run --rm -it \
+  --label com.pystata.shim.enabled=true \
   -e PYSTATA_SHIM_TOKEN \
   -e PYSTATA_SHIM_HOST_WORKSPACE="$(pwd)" \
   -v "$(pwd):/workspace" \
@@ -88,6 +96,8 @@ docker run --rm -it \
     export PYTHONPATH=/opt/pystata-shim-client
     python3 -c "import pystata_shim as s; print(s.health_full())"
   '
+
+bash host/scripts/shimctl.sh stop-if-unused
 ```
 
 `PYSTATA_SHIM_HOST_WORKSPACE` must be the absolute host path that
@@ -95,8 +105,10 @@ backs the `/workspace` bind. If you `cd /Users/you/proj && docker run
 -v $(pwd):/workspace`, then `PYSTATA_SHIM_HOST_WORKSPACE` should be
 `/Users/you/proj`.
 
-See `examples/docker-run/` for a runnable shell script version and
-`examples/docker-compose/` for a Compose file.
+See `examples/docker-run/` for a runnable shell script version,
+`examples/docker-compose/` for a Compose file, and
+`examples/justfile/` for a `just`-driven wrapper that handles
+`shimctl start`/`stop-if-unused` for you.
 
 ## Optional: mounting the Stata mirrors
 

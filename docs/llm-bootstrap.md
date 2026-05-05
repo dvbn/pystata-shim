@@ -157,17 +157,17 @@ Gate 4.
 
 ---
 
-## Gate 4 — Run the host setup script (CONFIRM FIRST)
+## Gate 4 — Prepare the host runtime (CONFIRM FIRST)
 
 **CONFIRM FIRST.** Tell the user, before running this:
 
-> "I'm going to install the pystata-shim launch agent. This will
-> create `~/.pystata-shim/` (about 60 MB), generate a
+> "I'm going to prepare the pystata-shim host runtime. This will
+> create `~/.pystata-shim/` (about 60 MB) and generate a
 > 64-hex-character shared secret (32 bytes) in
-> `~/.pystata-shim/token` (mode 0600), and
-> install a launchd plist at
-> `~/Library/LaunchAgents/com.pystata.shim.plist` that runs as
-> your user. The script is idempotent. Proceed?"
+> `~/.pystata-shim/token` (mode 0600). It will **not** install a
+> login-time daemon — the shim is started per session by
+> `shimctl.sh` in the next gate. The script is idempotent.
+> Proceed?"
 
 If they say yes, run it with the values you established earlier:
 
@@ -186,31 +186,33 @@ Verification gate:
 
 ```bash
 test -s ~/.pystata-shim/token && stat -f "%Lp %N" ~/.pystata-shim/token
-test -f ~/Library/LaunchAgents/com.pystata.shim.plist
-launchctl print "gui/$(id -u)/com.pystata.shim" | head -20
+test -x ~/.pystata-shim/start.sh
+test -x <REPO_PATH_VERIFIED>/host/scripts/shimctl.sh
 ```
 
 Expected:
 
 - token file exists and shows `600 /Users/<you>/.pystata-shim/token`
-- the plist file exists
-- `launchctl print` shows `state = running`
+- `start.sh` exists and is executable
+- `shimctl.sh` exists and is executable
 
 ---
 
-## Gate 5 — Health check
+## Gate 5 — Start the shim and run the health check
 
 ```bash
-bash ~/Code/pystata-shim/host/scripts/healthcheck.sh
+bash <REPO_PATH_VERIFIED>/host/scripts/shimctl.sh start
+bash <REPO_PATH_VERIFIED>/host/scripts/healthcheck.sh
 ```
 
-Expected: a JSON object with `"ok": true` and
+Expected: `shimctl.sh start` prints `started pid=... url=...`, and
+`healthcheck.sh` returns a JSON object with `"ok": true` and
 `"pool_state": "ready"`.
 
 If `pool_state` is `uninitialized`, get the detail:
 
 ```bash
-bash ~/Code/pystata-shim/host/scripts/healthcheck.sh --auth
+bash <REPO_PATH_VERIFIED>/host/scripts/healthcheck.sh --auth
 ```
 
 The `init_error` field will tell you exactly what's wrong. Most
@@ -220,7 +222,8 @@ common:
 - `PYSTATA_UTILITIES` wrong path.
 - `pystata` import failed because the Stata install is too old.
 
-Fix, re-run Gate 4, re-check.
+Fix, re-run Gate 4, then `shimctl.sh stop && shimctl.sh start`,
+re-check.
 
 ---
 
@@ -246,8 +249,8 @@ If you see `"ok": false`:
 - `error_code: "shim_degraded"` → wait 5 minutes and retry; the
   breaker has tripped from earlier failures.
 - transport error (`Connection refused`, timeout, or DNS failure) →
-  Gate 5 isn't actually green. Re-check the launch agent and
-  `host.docker.internal` mapping.
+  Gate 5 isn't actually green. Re-check `shimctl.sh status` and
+  the `host.docker.internal` mapping.
 
 ---
 
@@ -338,7 +341,7 @@ These are the questions / failure modes you'll see often.
 | `setup_host.sh` exits with "PYSTATA_UTILITIES does not exist"           | Run `ls /Applications/Stata*/utilities/pystata`                                                                   | Set `PYSTATA_UTILITIES` to the directory that does exist.                                                  |
 | `/health` returns `pool_state: uninitialized`                            | Authenticated `/health` to read `init_error`                                                                       | Usually edition mismatch; set `PYSTATA_EDITION=se` or `be`.                                               |
 | Container cannot resolve `host.docker.internal`                         | Is the user on Colima / Rancher Desktop / Podman?                                                                  | Add `--add-host=host.docker.internal:host-gateway` to the docker run.                                     |
-| Container connection is refused or times out                            | Is the launch agent running on the host? `launchctl print "gui/$(id -u)/com.pystata.shim"`                          | If not, re-run `setup_host.sh`.                                                                            |
+| Container connection is refused or times out                            | Is the host shim running? `bash host/scripts/shimctl.sh status`                                                       | If `stopped`, run `bash host/scripts/shimctl.sh start`.                                                     |
 | `POST /do` returns `401`                                                | Is `PYSTATA_SHIM_TOKEN` inside the container the same as `cat ~/.pystata-shim/token` on the host?                    | Re-export the env var; trailing newlines from `cat` are a common gotcha.                                  |
 | Stata says "file not found" but file exists                             | Did the `.do` file use `/workspace/...` paths?                                                                     | Inside `.do` code, use paths relative to `--cwd`, not absolute container paths.                            |
 | `error_code: "shim_degraded"`                                           | `tail ~/.pystata-shim/shim.stderr.log`                                                                              | Wait 5 minutes; investigate the underlying crash.                                                          |
@@ -369,12 +372,18 @@ Gate 3.)
 
 Tell the user, in order:
 
-1. The shim is running at `127.0.0.1:8787` and starts at login.
+1. The shim is running at `127.0.0.1:8787` for the current
+   container session. It is **not** a login-time daemon — the
+   next reboot leaves it stopped, and you start it again with
+   `bash host/scripts/shimctl.sh start` (or your container
+   wrapper does, e.g. `examples/justfile/Justfile`).
 2. Their token is at `~/.pystata-shim/token` (mode `0600`).
 3. Their audit log is `~/.pystata-shim/audit.jsonl` and grows
    slowly (one line per finished `.do` request).
-4. To rotate the token, `rm ~/.pystata-shim/token && bash host/scripts/setup_host.sh`,
-   then update the container env.
+4. To rotate the token: stop the shim, regenerate, restart:
+   `bash host/scripts/shimctl.sh stop && rm ~/.pystata-shim/token
+   && bash host/scripts/setup_host.sh && bash host/scripts/shimctl.sh start`.
+   Then update the container env.
 5. To uninstall, see the "Cleanup" section in
    `docs/getting-started.md`.
 
@@ -392,5 +401,5 @@ report this to them:
 > investigate manually?
 
 Don't apply destructive changes (deleting the home dir, force-
-unloading the launch agent, deleting the token) without the user
-explicitly confirming.
+removing an opt-in launch agent, deleting the token) without the
+user explicitly confirming.

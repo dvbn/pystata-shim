@@ -1,15 +1,24 @@
 # macOS host setup
 
 This page walks through installing `pystata-shim` on a macOS machine
-that already has Stata. You end up with:
+that already has Stata. Default installation is **lifecycle-driven**:
+running `setup_host.sh` only prepares files; you (or a container
+wrapper) explicitly start the shim with `shimctl.sh start` when you
+need it and stop it with `shimctl.sh stop` (or `stop-if-unused`) when
+you are done. There is no login-time daemon by default.
 
-- a launch agent running as your user account
-- a FastAPI HTTP shim on `127.0.0.1:8787`
-- a 64-hex-character shared secret (32 bytes) in
-  `~/.pystata-shim/token`
+You end up with:
+
 - a venv under `~/.pystata-shim/venv/` (only fastapi, uvicorn, pydantic)
+- copies of `app.py`, `worker.py`, and `start.sh` under `~/.pystata-shim/`
+- a 64-hex-character shared secret (32 bytes) in
+  `~/.pystata-shim/token` with mode `0600`
 - restricted `.do` validation by default, with an explicit trusted-mode
   opt-in if you want Stata host escapes such as `shell` or `python`
+
+The shim is **not** running yet. Use the lifecycle script to bring it
+up — either by hand, from a container wrapper, or from your project's
+Justfile.
 
 The shim never mutates your Stata install. It reads PyStata from the
 utilities directory you point it at, nothing more.
@@ -22,9 +31,13 @@ utilities directory you point it at, nothing more.
   work when `PYSTATA_UTILITIES` points at their `utilities` directory.
 - `python3` 3.10 or later.
 - `openssl`, `rsync` (both ship with macOS by default).
-- `curl` for the optional helper healthcheck commands (ships with
-  macOS by default).
-- `launchctl` (ships with macOS).
+- `curl` is preferred for `host/scripts/healthcheck.sh` and for
+  `shimctl.sh status` / `start` (ships with macOS by default). When
+  curl is missing, `shimctl.sh` falls back to a bash `/dev/tcp` HTTP
+  probe that is a degree weaker but still distinguishes the shim
+  from a stray TCP listener on the same port.
+- `launchctl` (ships with macOS) — only required for the opt-in
+  `INSTALL_LAUNCH_AGENT=1` mode.
 
 ## Where PyStata lives on your machine
 
@@ -47,9 +60,9 @@ directory exists before it creates anything.
 
 The default `PYSTATA_EDITION` is `mp`. If the shim comes up and
 `/health` reports `pool_state: uninitialized` with an `init_error`
-about the license, you most likely need `PYSTATA_EDITION=se` or
-`be`. Set it, re-run `setup_host.sh` (idempotent), and the launch
-agent reloads against the new edition.
+about the license, you most likely need `PYSTATA_EDITION=se` or `be`.
+Set it, re-run `setup_host.sh` (idempotent), and re-run `shimctl.sh
+start` against the updated runtime.
 
 ## One-shot install
 
@@ -64,7 +77,7 @@ export PYSTATA_SHIM_ALLOW_UNSAFE_DO=0               # 0 restricted, 1 trusted
 bash host/scripts/setup_host.sh
 ```
 
-What it does, in order:
+What it does, in order (default mode, no LaunchAgent):
 
 1. creates `~/.pystata-shim/` and `~/.pystata-shim/runs/`
 2. installs `host/app.py`, `host/worker.py`, and `host/start.sh` into
@@ -74,27 +87,56 @@ What it does, in order:
 4. writes a new 64-hex-character shared secret (32 bytes) to
    `~/.pystata-shim/token` with mode `0600`, unless a token already
    exists there (idempotent)
-5. renders `host/launchd/com.pystata.shim.plist.template` into
-   `~/Library/LaunchAgents/com.pystata.shim.plist` with your paths
-6. loads the launch agent with `launchctl bootstrap`, starts it, and
-   waits for authenticated `/health` to succeed
+5. confirms `start.sh` and `host/scripts/shimctl.sh` are present and
+   prints the next-step commands you need to start using the shim
 
-At the end, setup should print `authenticated health ok`. If the
-launch agent accepted the job but the shim did not become healthy,
-the script exits non-zero and prints the stderr log tail plus any
-process listening on the configured port.
-
-You can re-check the unauthenticated health payload with:
+The script does **not** start the shim. Bring it up with:
 
 ```bash
-bash host/scripts/healthcheck.sh
-```
-
-For the detailed, authenticated payload:
-
-```bash
+bash host/scripts/shimctl.sh start
 bash host/scripts/healthcheck.sh --auth
 ```
+
+Stop it with:
+
+```bash
+bash host/scripts/shimctl.sh stop
+```
+
+`shimctl.sh stop-if-unused` is the safer stop in a multi-container
+workflow: it leaves the shim running if any other container labeled
+`com.pystata.shim.enabled=true` is still up, and stops it otherwise.
+
+## Opt-in: install a launch agent
+
+If you want a `launchctl`-managed shim (instead of `shimctl`), re-run
+setup with the opt-in flag:
+
+```bash
+INSTALL_LAUNCH_AGENT=1 bash host/scripts/setup_host.sh
+```
+
+This adds a sixth step that renders
+`host/launchd/com.pystata.shim.plist.template` into
+`~/Library/LaunchAgents/com.pystata.shim.plist` and loads it via
+`launchctl bootstrap`. The plist template ships **without**
+`RunAtLoad` and `KeepAlive`, so installing the agent does **not**
+make the shim a login-time daemon — `launchctl bootstrap` only loads
+the job into the user's GUI domain. To actually start it:
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/com.pystata.shim"
+```
+
+If you do want the shim to start at login automatically, edit the
+installed plist and add the keys yourself. The template's header
+comment shows the exact XML to add.
+
+If you previously ran an older version of this repo that installed a
+persistent (`RunAtLoad`+`KeepAlive`) launch agent, the new
+`setup_host.sh` will print a one-time warning when it detects that
+agent and tell you exactly how to remove it. It will not silently
+delete user-installed services.
 
 ## Restricted Mode Vs Trusted Mode
 
@@ -104,7 +146,7 @@ that uses direct host escapes (`shell`, `!`, `xshell`, `python`,
 cannot inspect safely before execution.
 
 If you fully trust the container and want the older, less restrictive
-behavior, install or re-render the LaunchAgent with:
+behavior, re-run setup with:
 
 ```bash
 PYSTATA_SHIM_ALLOW_UNSAFE_DO=1 bash host/scripts/setup_host.sh
@@ -120,9 +162,15 @@ To return to restricted mode:
 PYSTATA_SHIM_ALLOW_UNSAFE_DO=0 bash host/scripts/setup_host.sh
 ```
 
+If you also installed the LaunchAgent in opt-in mode, `launchctl
+kickstart -k "gui/$(id -u)/com.pystata.shim"` reloads it against the
+new value. Otherwise, just `shimctl.sh stop && shimctl.sh start`.
+
 ## Verifying end-to-end from your Mac
 
 ```bash
+bash host/scripts/shimctl.sh start
+
 HEADER_FILE="$(mktemp)"
 trap 'rm -f "${HEADER_FILE}"' EXIT
 printf 'X-Shim-Token: %s\n' "$(cat ~/.pystata-shim/token)" > "${HEADER_FILE}"
@@ -137,40 +185,63 @@ You should get a JSON blob with `"ok": true`, `"stata_rc": 0`, and
 `"stdout"` containing `"2"`. The temporary header file keeps the
 literal token out of the `curl` process arguments.
 
-## Managing the launch agent
-
-The label is `com.pystata.shim`. Standard launchctl commands apply:
+## Managing the shim with shimctl
 
 ```bash
-# Inspect
-launchctl print "gui/$(id -u)/com.pystata.shim"
+# Status (script-friendly: first whitespace-separated token is the
+# state — running, stopped, or unknown)
+bash host/scripts/shimctl.sh status
 
 # Tail the logs (one is stdout, one is stderr)
 tail -f ~/.pystata-shim/shim.stdout.log
 tail -f ~/.pystata-shim/shim.stderr.log
 
-# Reload after editing the plist or rotating the token
-launchctl bootout   "gui/$(id -u)" ~/Library/LaunchAgents/com.pystata.shim.plist
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.pystata.shim.plist
-launchctl kickstart -k "gui/$(id -u)/com.pystata.shim"
+# Restart after editing the runtime
+bash host/scripts/shimctl.sh stop
+bash host/scripts/shimctl.sh start
 
-# Stop it
-launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.pystata.shim.plist
+# Conservative stop in a multi-container workflow:
+bash host/scripts/shimctl.sh stop-if-unused
 ```
 
 The logs grow unbounded. If you run the shim long-term, rotate them
 with `newsyslog` or truncate on a schedule.
 
+## Managing the launch agent (opt-in only)
+
+If you installed the agent with `INSTALL_LAUNCH_AGENT=1`, the label is
+`com.pystata.shim`. Standard launchctl commands apply:
+
+```bash
+# Inspect
+launchctl print "gui/$(id -u)/com.pystata.shim"
+
+# Run it now (the default plist does not RunAtLoad)
+launchctl kickstart -k "gui/$(id -u)/com.pystata.shim"
+
+# Reload after editing the plist or rotating the token
+launchctl bootout   "gui/$(id -u)" ~/Library/LaunchAgents/com.pystata.shim.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.pystata.shim.plist
+
+# Unload completely
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.pystata.shim.plist
+```
+
 ## Rotating the shared secret
 
 ```bash
+bash host/scripts/shimctl.sh stop
 rm ~/.pystata-shim/token
-bash host/scripts/setup_host.sh          # writes a fresh token, reloads the agent
+bash host/scripts/setup_host.sh          # writes a fresh token
+bash host/scripts/shimctl.sh start
 ```
 
 Then update `PYSTATA_SHIM_TOKEN` on every container that talks to the
-shim. Changing the token invalidates previous sessions on the next
-request, not mid-request.
+shim. `docker exec` does **not** change the env vars of an already-
+running container — re-create the container, or `docker stop` and
+`docker run` it with the new token in your shell's environment.
+Changing the token invalidates previous sessions on the next request,
+not mid-request.
 
 ## Memory footprint
 
@@ -214,8 +285,10 @@ bind-mount them read-only and browse the files.
 ## Uninstall
 
 ```bash
-launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.pystata.shim.plist
-rm ~/Library/LaunchAgents/com.pystata.shim.plist
+bash host/scripts/shimctl.sh stop
+# If you opted into the LaunchAgent:
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.pystata.shim.plist 2>/dev/null || true
+rm -f ~/Library/LaunchAgents/com.pystata.shim.plist
 rm -rf ~/.pystata-shim
 # If you ran sync_stata_mirrors.sh and want the mirrors gone too:
 rm -rf /Users/Shared/stata-mirrors

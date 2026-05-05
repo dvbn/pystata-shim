@@ -1,0 +1,124 @@
+# Generic Justfile recipe set for projects that wire a Docker container
+# to the host pystata-shim using the container-session lifecycle.
+#
+# Copy this file into the root of your own project, edit the four
+# variables below, and you have create / start / stop / shell recipes
+# wired to the host shim.
+#
+# Required tools: `just`, `docker`, and a checkout of the pystata-shim
+# repo accessible from this Justfile so it can call shimctl.sh.
+#
+# The recipes:
+#   just create <name> [<project_path>]
+#                       create a labeled container that mounts <project_path>
+#                       at /workspace and gets the shim env vars
+#   just start <name>   start the container; if the container is labeled
+#                       shim-enabled, also start the host shim
+#   just stop <name>    stop the container; ask shimctl whether to stop
+#                       the host shim too
+#   just shell <name> [<cmd>...]
+#                       open a shell (or run a command) in the container,
+#                       starting it (and the shim) if needed
+#   just status         show shim status
+#
+# This file does not assume a username, project name, container manager,
+# or auth flow. Bring your own.
+
+set dotenv-load := true
+
+# ---- adapt these four variables -----------------------------------------
+
+# Docker image to run. Build it however you like; this Justfile does not
+# build images for you.
+image := env("PYSTATA_SHIM_EXAMPLE_IMAGE", "python:3.12-slim")
+
+# Prefix for container names. Useful so multiple projects do not clash.
+container_prefix := env("PYSTATA_SHIM_EXAMPLE_PREFIX", "work-")
+
+# Path to host/scripts/shimctl.sh in your pystata-shim checkout.
+# Default: a sibling clone at ../pystata-shim. Change to wherever you
+# keep it.
+shimctl := env("PYSTATA_SHIM_SHIMCTL", "../pystata-shim/host/scripts/shimctl.sh")
+
+# Base URL the container uses to reach the shim. The default works for
+# Docker Desktop and OrbStack on macOS. On Linux, set this to the host
+# gateway address, e.g. http://172.17.0.1:8787.
+shim_url := env("PYSTATA_SHIM_BASE_URL", "http://host.docker.internal:8787")
+
+# ---- fixed values: do not change unless you also change them in -------
+# ---- shimctl.sh and the docker-run examples in the public repo --------
+
+shim_label := "com.pystata.shim.enabled=true"
+
+# ---- recipes ------------------------------------------------------------
+
+create name project_path=".":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    project_dir="$(cd {{ quote(project_path) }} && pwd)"
+    if [ -z "${PYSTATA_SHIM_TOKEN:-}" ]; then
+      echo "PYSTATA_SHIM_TOKEN is not set." >&2
+      echo "  export PYSTATA_SHIM_TOKEN=\"\$(cat \$HOME/.pystata-shim/token)\"" >&2
+      echo "before running \`just create\`. The literal token is never put on the" >&2
+      echo "docker command line — '-e PYSTATA_SHIM_TOKEN' below tells docker to" >&2
+      echo "read it from the calling shell's environment." >&2
+      exit 1
+    fi
+    docker create \
+      --name {{ container_prefix }}{{ name }} \
+      --label {{ shim_label }} \
+      -e PYSTATA_SHIM_TOKEN \
+      -e PYSTATA_SHIM_BASE_URL={{ quote(shim_url) }} \
+      -e PYSTATA_SHIM_CONTAINER_WORKSPACE=/workspace \
+      -e PYSTATA_SHIM_HOST_WORKSPACE="$project_dir" \
+      -v "$project_dir:/workspace:rw" \
+      --add-host=host.docker.internal:host-gateway \
+      {{ image }} \
+      sleep infinity
+
+start name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    container={{ container_prefix }}{{ name }}
+    docker start "$container" >/dev/null
+    label=$(docker inspect --format '{{ "{{" }} index .Config.Labels "com.pystata.shim.enabled" {{ "}}" }}' "$container" 2>/dev/null || echo "")
+    if [ "$label" = "true" ]; then
+      bash {{ shimctl }} start
+    fi
+    echo "$container"
+
+stop name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    container={{ container_prefix }}{{ name }}
+    docker stop "$container" >/dev/null
+    bash {{ shimctl }} stop-if-unused
+
+shell name *CMD:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    container={{ container_prefix }}{{ name }}
+    state="$(docker inspect --format '{{ "{{" }} .State.Status {{ "}}" }}' "$container" 2>/dev/null || true)"
+    if [ "$state" != "running" ]; then
+      just start {{ name }} >/dev/null
+    else
+      label=$(docker inspect --format '{{ "{{" }} index .Config.Labels "com.pystata.shim.enabled" {{ "}}" }}' "$container" 2>/dev/null || echo "")
+      if [ "$label" = "true" ]; then
+        bash {{ shimctl }} start
+      fi
+    fi
+    if [ -n {{ quote(CMD) }} ]; then
+      docker exec -it "$container" bash -lc {{ quote(CMD) }}
+    else
+      docker exec -it "$container" bash -l
+    fi
+
+status:
+    bash {{ shimctl }} status
+
+destroy name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    container={{ container_prefix }}{{ name }}
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    bash {{ shimctl }} stop-if-unused
