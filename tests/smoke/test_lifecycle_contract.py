@@ -89,11 +89,26 @@ def test_setup_host_prints_next_step_pointing_at_shimctl():
 
 def test_shimctl_uses_neutral_public_label():
     body = SHIMCTL_SCRIPT.read_text(encoding="utf-8")
-    assert "openstata" not in body.lower(), (
-        "shimctl.sh leaks the private 'openstata' name; public repo must "
-        "use neutral pystata-shim naming"
+    # The public name is the only allowed one for the project's own
+    # identity. The single intentional reference to the legacy
+    # `com.openstata.pystata-shim.plist` label inside the foreign-
+    # listener cleanup hint is whitelisted: an upgrading user may need
+    # to remove that file. Keep that exception narrow.
+    body_lower = body.lower()
+    legacy_plist_string = "com.openstata.pystata-shim.plist"
+    legacy_count = body_lower.count(legacy_plist_string)
+    sanitized = body_lower.replace(legacy_plist_string, "")
+    assert "openstata" not in sanitized, (
+        "shimctl.sh references the legacy 'openstata' name in a place "
+        "that is NOT the legacy-LaunchAgent cleanup hint; the only allowed "
+        "use is the literal `com.openstata.pystata-shim.plist` filename"
     )
-    # Must reference the public reverse-DNS label.
+    assert legacy_count > 0, (
+        "shimctl.sh must mention the legacy `com.openstata.pystata-shim.plist` "
+        "filename in its foreign-listener cleanup hint so users upgrading "
+        "from the old install know where to look"
+    )
+    # Must also reference the public reverse-DNS label for its own runtime.
     assert "com.pystata.shim" in body, (
         "shimctl.sh must reference the public com.pystata.shim label"
     )
@@ -103,7 +118,7 @@ def test_example_justfile_exists_and_uses_neutral_label():
     assert JUSTFILE.exists(), f"missing {JUSTFILE}"
     body = JUSTFILE.read_text(encoding="utf-8")
     assert "openstata" not in body.lower(), (
-        "Justfile leaks the private 'openstata' name"
+        "Justfile must not reference the legacy 'openstata' name"
     )
     assert "com.pystata.shim.enabled=true" in body, (
         "example Justfile must use the public lifecycle label"

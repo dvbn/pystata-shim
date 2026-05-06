@@ -7,3 +7,16 @@ __pycache__/
 .env
 .venv/
 venv/
+
+# Local editor / agent tool state
+.claude/
+.codex/
+.cursor/
+.continue/
+.aider*
+.vscode/
+
+# Test coverage output
+.coverage
+coverage.xml
+htmlcov/

@@ -1,5 +1,74 @@
 # Troubleshooting
 
+## "shim already responding" but I never started it
+
+If `shimctl.sh start` prints
+
+```
+shimctl: shim already responding on http://127.0.0.1:8787/status; not starting another.
+```
+
+and you don't recall starting one, another `pystata-shim` install on
+this Mac is bound to the same port. `shimctl.sh` cannot distinguish
+"my shim is up" from "a different install's shim is up" — both speak
+the same `/status` schema.
+
+Identify the active install:
+
+```bash
+lsof -nP -iTCP:8787 -sTCP:LISTEN
+```
+
+The `cwd` column of that PID names the install directory. If it
+is not the `~/.pystata-shim` you expect, you're sharing the port
+with another install. Either stop the other install (run its
+`shimctl stop` against its `PYSTATA_SHIM_HOME`) or change
+`PYSTATA_SHIM_PORT` for one of them.
+
+## "Something else is already on port 8787"
+
+If `shimctl.sh start` exits with a message like
+
+```
+shimctl: something is already listening on http://127.0.0.1:8787/status
+shimctl:   but it does not return our /status pool_state payload.
+shimctl:   This usually means a stale ~/.pystata-shim or an old
+shimctl:   launchd agent is still bound to the port.
+```
+
+then a process is bound to the port but is not the current shim.
+Common cause: a previous version, renamed install, or embedded install
+created a launchd agent that is still running. The `/status` returning
+`{"detail":"Not Found"}` instead of the `pool_state` payload is the
+signature of an old API shape holding the port.
+
+Find what's listening:
+
+```bash
+lsof -nP -iTCP:8787 -sTCP:LISTEN
+```
+
+If the cwd column for that PID points at `~/.pystata-shim` or
+`~/.openstata`, it's a leftover host shim. Remove the legacy launchd
+agents under both historical label names:
+
+```bash
+launchctl bootout "gui/$(id -u)" \
+    "$HOME/Library/LaunchAgents/com.pystata.shim.plist" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/com.pystata.shim.plist"
+
+launchctl bootout "gui/$(id -u)" \
+    "$HOME/Library/LaunchAgents/com.openstata.pystata-shim.plist" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/com.openstata.pystata-shim.plist"
+
+# Verify nothing is listening anymore:
+lsof -nP -iTCP:8787 -sTCP:LISTEN || true
+```
+
+If the listener is a manually-started process (not a launchd
+agent), kill it explicitly — `shimctl.sh` deliberately does not
+kill unknown processes for you. Then re-run `shimctl.sh start`.
+
 ## "The shim is not running at all"
 
 This is the most common first-time failure. Symptoms: `curl

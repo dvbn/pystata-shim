@@ -1,7 +1,7 @@
 # pystata-shim
 
 Run Stata from a Linux Docker container while Stata stays installed on
-your Mac. There are probably better/simpler ways to achieve this but it works well for me. 
+your Mac.
 
 `pystata-shim` is a small localhost service for researchers and
 developers who use containerized coding agents, scripts, or notebooks

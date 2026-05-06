@@ -20,7 +20,7 @@ REPO = Path(__file__).resolve().parents[2]
 SHIMCTL = REPO / "host" / "scripts" / "shimctl.sh"
 
 
-def _run(args, env_extra=None, path_prefix=None):
+def _run(args, env_extra=None, path_prefix=None, path_only=None, timeout=None):
     env = {k: v for k, v in os.environ.items()}
     env.pop("PYSTATA_SHIM_HOME", None)
     env.pop("PYSTATA_SHIM_HOST", None)
@@ -28,14 +28,39 @@ def _run(args, env_extra=None, path_prefix=None):
     env.pop("PYSTATA_SHIM_TOKEN", None)
     if env_extra:
         env.update(env_extra)
-    if path_prefix is not None:
+    if path_only is not None:
+        # path_only replaces PATH entirely so no inherited binary
+        # (e.g. real docker on a maintainer Mac) leaks into the test.
+        env["PATH"] = path_only
+    elif path_prefix is not None:
         env["PATH"] = path_prefix + ":" + env.get("PATH", "")
     return subprocess.run(
         ["bash", str(SHIMCTL), *args],
         env=env,
         capture_output=True,
         text=True,
+        timeout=timeout,
     )
+
+
+def _populate_fake_path(fake_path, extras=()):
+    """Symlink the basic POSIX utilities the script needs into a
+    throwaway PATH directory so we can exercise shimctl in isolation."""
+    base = ("bash", "cat", "grep", "awk", "sed", "kill", "rm",
+            "test", "[", "true", "false", "head", "tail", "tr",
+            "sleep", "sh", "mkdir", "rmdir", "stat", "ls",
+            "dirname", "basename", "uname",
+            # nohup is the second-fallback in spawn_shim; without it
+            # the bare-nohup last-resort fallback would be untestable
+            # under a fully-replaced PATH.
+            "nohup")
+    for util in tuple(base) + tuple(extras):
+        real = shutil.which(util)
+        if real:
+            try:
+                os.symlink(real, os.path.join(fake_path, util))
+            except FileExistsError:
+                pass
 
 
 def test_shimctl_exists_and_is_executable():
@@ -87,24 +112,22 @@ def test_shimctl_unknown_subcommand_exits_nonzero():
 
 def test_stop_if_unused_conservative_when_docker_missing():
     """If `docker` is not on PATH, stop-if-unused must not stop the
-    shim (conservative default per the handoff doc)."""
+    shim (conservative default).
+
+    Real-host failure mode this test was rewritten to catch: the prior
+    version prefixed PATH but appended the real PATH afterward, so on
+    a developer machine with Docker installed the test resolved real
+    docker and never exercised the conservative path. We now replace
+    PATH entirely to make Docker genuinely unavailable.
+    """
     home = tempfile.mkdtemp()
     fake_path = tempfile.mkdtemp()  # empty: no docker binary here
-    # Add a couple of utilities the script may need, by symlinking from
-    # the real PATH. This way the script can still find e.g. cat/grep.
-    for util in ("bash", "cat", "grep", "awk", "sed", "kill", "rm",
-                 "test", "[", "true", "false", "head", "tail"):
-        real = shutil.which(util)
-        if real:
-            try:
-                os.symlink(real, os.path.join(fake_path, util))
-            except FileExistsError:
-                pass
+    _populate_fake_path(fake_path)
     try:
         proc = _run(
             ["stop-if-unused"],
             {"PYSTATA_SHIM_HOME": home},
-            path_prefix=fake_path,
+            path_only=fake_path,  # NOT path_prefix — real PATH excluded
         )
         # Conservative: leave the shim alone; exit clean; emit a hint.
         assert proc.returncode == 0, proc.stderr
@@ -251,6 +274,255 @@ def test_start_recovers_from_stale_pid_file():
             "process. Stale PID handling is broken."
         )
     finally:
+        # Reap the sleep stub spawned via spawn_shim. Without this the
+        # process leaks for up to 120s into the CI environment.
+        pid_file = Path(home) / "shim.pid"
+        if pid_file.exists():
+            try:
+                p = int(pid_file.read_text().strip())
+                os.kill(p, 9)
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(fake_path, ignore_errors=True)
+
+
+def test_start_timeout_leaves_no_stale_lock():
+    """If `start` times out waiting for the listener, the
+    `.shimctl-start.lock` directory must be cleaned up — otherwise the
+    next start invocation gets a permanent "another start is in
+    progress" message and the user has no way to recover.
+
+    Real-host failure mode: a timed-out start left the lock behind, and
+    a subsequent start (after the user fixed the underlying issue) was
+    refused with no actionable message.
+    """
+    home = tempfile.mkdtemp()
+    fake_path = tempfile.mkdtemp()
+    _populate_fake_path(fake_path)
+    try:
+        # Stub start.sh that just sleeps — never opens the listener.
+        # `start` will fork it, wait 15s, then exit non-zero.
+        start_script = Path(home) / "start.sh"
+        start_script.write_text("#!/usr/bin/env bash\nsleep 60\n")
+        start_script.chmod(0o755)
+
+        env_extra = {
+            "PYSTATA_SHIM_HOME": home,
+            # Pick an unbindable port so is_listening always fails.
+            "PYSTATA_SHIM_PORT": "1",
+        }
+        # Use real PATH (so python3 is available for the new spawn
+        # path) but with our fake_path PREPENDED so utilities resolve
+        # consistently.
+        proc = _run(
+            ["start"],
+            env_extra,
+            path_prefix=fake_path,
+            timeout=30,
+        )
+        # Whether start succeeded or timed out, the lock dir must be
+        # gone afterward.
+        lock_dir = Path(home) / ".shimctl-start.lock"
+        assert not lock_dir.exists(), (
+            f"start left stale lock at {lock_dir}; "
+            f"stdout={proc.stdout!r}, stderr={proc.stderr!r}"
+        )
+    finally:
+        # Reap any background sleep we spawned.
+        pid_file = Path(home) / "shim.pid"
+        if pid_file.exists():
+            try:
+                p = int(pid_file.read_text().strip())
+                os.kill(p, 9)
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(fake_path, ignore_errors=True)
+
+
+def test_start_succeeds_and_leaves_no_lock():
+    """The happy path leaves no `.shimctl-start.lock` behind. Uses a
+    Python listener that serves the shim's `pool_state` token so
+    is_listening reports running."""
+    import socket
+    import threading
+
+    home = tempfile.mkdtemp()
+    fake_path = tempfile.mkdtemp()
+    _populate_fake_path(fake_path)
+
+    # Bind a free port for the fake listener.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    bound_port = sock.getsockname()[1]
+    sock.listen(8)
+    stop = threading.Event()
+
+    def _serve():
+        sock.settimeout(0.25)
+        while not stop.is_set():
+            try:
+                client, _ = sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                client.recv(4096)
+                body = b'{"ok":true,"pool_state":"ready","queue_depth":0}'
+                resp = (
+                    b"HTTP/1.0 200 OK\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                    b"\r\n" + body
+                )
+                client.sendall(resp)
+            finally:
+                client.close()
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+
+    try:
+        # start.sh is a no-op stub: the fake listener already serves
+        # /status, so cmd_start will see is_listening=true and return
+        # cleanly without forking.
+        start_script = Path(home) / "start.sh"
+        start_script.write_text("#!/usr/bin/env bash\n: never run\n")
+        start_script.chmod(0o755)
+
+        env_extra = {
+            "PYSTATA_SHIM_HOME": home,
+            "PYSTATA_SHIM_PORT": str(bound_port),
+        }
+        # Force the no-curl /dev/tcp branch. The fake listener's JSON
+        # body deliberately has no trailing newline, matching common
+        # HTTP responses from small servers.
+        proc = _run(["start"], env_extra, path_only=fake_path, timeout=20)
+        assert proc.returncode == 0, (proc.stdout, proc.stderr)
+        lock_dir = Path(home) / ".shimctl-start.lock"
+        assert not lock_dir.exists(), "successful start must clean its lock"
+    finally:
+        stop.set()
+        t.join(timeout=2)
+        sock.close()
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(fake_path, ignore_errors=True)
+
+
+def test_repeated_start_handles_stale_lock_gracefully():
+    """Even if a prior invocation left a stale lock dir on disk (a bug
+    we are fixing, but defense-in-depth), the next start invocation
+    must surface the situation instead of silently hanging or
+    producing an `unbound variable` error."""
+    home = tempfile.mkdtemp()
+    fake_path = tempfile.mkdtemp()
+    _populate_fake_path(fake_path)
+    try:
+        start_script = Path(home) / "start.sh"
+        start_script.write_text("#!/usr/bin/env bash\n: never run\n")
+        start_script.chmod(0o755)
+
+        # Pre-create the lock dir to simulate a leftover from a crashed
+        # prior run.
+        lock_dir = Path(home) / ".shimctl-start.lock"
+        lock_dir.mkdir()
+
+        proc = _run(
+            ["start"],
+            {"PYSTATA_SHIM_HOME": home, "PYSTATA_SHIM_PORT": "1"},
+            timeout=20,
+        )
+        # The script must NOT crash with "unbound variable" or any
+        # other shell error noise. It can either reuse the lock and
+        # eventually time out, or report the lock and exit cleanly.
+        combined = proc.stdout + proc.stderr
+        assert "unbound variable" not in combined, (
+            f"shimctl raised an unbound variable error: {combined!r}"
+        )
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(fake_path, ignore_errors=True)
+
+
+def test_start_refuses_when_foreign_listener_holds_port():
+    """If the configured port is held by something that does not
+    serve the shim's /status payload (a stale ~/.pystata-shim from
+    a previous install, an old launchd shim with a different API
+    shape, an unrelated dev server), `start` must abort with an
+    actionable error rather than fork another shim that will never
+    win the bind race.
+
+    This is the exact scenario flagged by real-host testing: the
+    old shim returned `{"detail":"Not Found"}` for /status because
+    its API surface predated the cheap-status split."""
+    import socket
+    import threading
+
+    home = tempfile.mkdtemp()
+    fake_path = tempfile.mkdtemp()
+    _populate_fake_path(fake_path)
+
+    # Bind a free port and serve a "404 not found" body so
+    # is_listening's pool_state grep fails.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    bound_port = sock.getsockname()[1]
+    sock.listen(8)
+    stop = threading.Event()
+
+    def _serve():
+        sock.settimeout(0.25)
+        while not stop.is_set():
+            try:
+                client, _ = sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                client.recv(4096)
+                body = b'{"detail":"Not Found"}'
+                resp = (
+                    b"HTTP/1.0 404 Not Found\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                    b"\r\n" + body
+                )
+                client.sendall(resp)
+            finally:
+                client.close()
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+
+    try:
+        start_script = Path(home) / "start.sh"
+        start_script.write_text("#!/usr/bin/env bash\n: never run\n")
+        start_script.chmod(0o755)
+
+        proc = _run(
+            ["start"],
+            {"PYSTATA_SHIM_HOME": home, "PYSTATA_SHIM_PORT": str(bound_port)},
+            timeout=20,
+        )
+        combined = proc.stdout + proc.stderr
+        # Must not silently succeed.
+        assert proc.returncode != 0, (
+            "start must refuse when a foreign listener holds the port; "
+            f"got returncode=0 with output {combined!r}"
+        )
+        lower = combined.lower()
+        assert "lsof" in lower or "another" in lower or "foreign" in lower or "already" in lower, (
+            "start must produce an actionable error mentioning lsof / "
+            "old shim / cleanup; "
+            f"got: {combined!r}"
+        )
+    finally:
+        stop.set()
+        t.join(timeout=2)
+        sock.close()
         shutil.rmtree(home, ignore_errors=True)
         shutil.rmtree(fake_path, ignore_errors=True)
 

@@ -84,6 +84,12 @@ start name:
     label=$(docker inspect --format '{{ "{{" }} index .Config.Labels "com.pystata.shim.enabled" {{ "}}" }}' "$container" 2>/dev/null || echo "")
     if [ "$label" = "true" ]; then
       bash {{ shimctl }} start
+      # Confirm readiness explicitly. `shimctl start` returns 0 even
+      # when it loses a parallel-start race — a separate `status`
+      # call is the right way to assert the shim is actually up
+      # before the wrapper does work that depends on it.
+      bash {{ shimctl }} status | grep -q '^running' \
+        || { echo "shim did not come up in time" >&2; exit 1; }
     fi
     echo "$container"
 

@@ -456,7 +456,7 @@ def test_openapi_title_is_public_name():
     assert r.status_code == 200
     body = r.json()
     assert body["info"]["title"] == "pystata-shim"
-    # Belt-and-suspenders: no legacy/private-flavored vocabulary leaks
+    # Belt-and-suspenders: no legacy/internal vocabulary leaks
     # into any endpoint description, summary, schema name, or tag.
     raw = r.text.lower()
     for needle in ("private_shim_name", "caller_role", "private-package", "com.private"):

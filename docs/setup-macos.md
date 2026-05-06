@@ -286,12 +286,29 @@ bind-mount them read-only and browse the files.
 
 ```bash
 bash host/scripts/shimctl.sh stop
-# If you opted into the LaunchAgent:
-launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.pystata.shim.plist 2>/dev/null || true
+
+# Remove launchd agents under both historical label names. The
+# `com.pystata.shim` agent is what `INSTALL_LAUNCH_AGENT=1` installs
+# for this repo; `com.openstata.pystata-shim` covers older renamed or
+# embedded installs that may still be present on the same Mac. Either
+# command is a no-op if nothing is loaded.
+launchctl bootout "gui/$(id -u)" \
+    ~/Library/LaunchAgents/com.pystata.shim.plist 2>/dev/null || true
+launchctl bootout "gui/$(id -u)" \
+    ~/Library/LaunchAgents/com.openstata.pystata-shim.plist 2>/dev/null || true
 rm -f ~/Library/LaunchAgents/com.pystata.shim.plist
+rm -f ~/Library/LaunchAgents/com.openstata.pystata-shim.plist
+
 rm -rf ~/.pystata-shim
 # If you ran sync_stata_mirrors.sh and want the mirrors gone too:
 rm -rf /Users/Shared/stata-mirrors
+```
+
+If something is still listening on `127.0.0.1:8787` after this,
+identify it before killing it:
+
+```bash
+lsof -nP -iTCP:8787 -sTCP:LISTEN
 ```
 
 No other files on your system are touched.

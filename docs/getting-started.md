@@ -346,9 +346,16 @@ If you decide this isn't for you and want to remove every trace:
 
 ```bash
 bash host/scripts/shimctl.sh stop
-# Only if you ever ran INSTALL_LAUNCH_AGENT=1:
-launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.pystata.shim.plist 2>/dev/null || true
+# Remove launchd agents under either historical label name (no-op if
+# absent). The first is what `INSTALL_LAUNCH_AGENT=1` installs for this
+# repo; the second covers older renamed or embedded installs that may
+# still be present on the same Mac.
+launchctl bootout "gui/$(id -u)" \
+    ~/Library/LaunchAgents/com.pystata.shim.plist 2>/dev/null || true
+launchctl bootout "gui/$(id -u)" \
+    ~/Library/LaunchAgents/com.openstata.pystata-shim.plist 2>/dev/null || true
 rm -f ~/Library/LaunchAgents/com.pystata.shim.plist
+rm -f ~/Library/LaunchAgents/com.openstata.pystata-shim.plist
 rm -rf ~/.pystata-shim
 # If you ever ran sync_stata_mirrors.sh, also:
 rm -rf /Users/Shared/stata-mirrors
