@@ -1,15 +1,18 @@
 # pystata-shim
 
 Run Stata from a Linux Docker container while Stata stays installed on
-your Mac.
+your Mac. This is a first step toward MCP-style Stata tooling: it gives
+scripts, notebooks, and coding agents a tool bridge to host-side Stata
+without exposing your host shell.
 
-`pystata-shim` is a small localhost service for researchers and
+`pystata-shim` is a small localhost HTTP service for researchers and
 developers who use containerized coding agents, scripts, or notebooks
 but need to execute Stata `.do` files on a licensed macOS Stata
-installation. It is designed for workflows such as replication work,
-automated empirical checks, and agent-assisted Stata development where
-the container should be able to run Stata code without having direct
-access to the host shell.
+installation. It is not an MCP server yet; this release builds the
+host-side execution, security, path-mapping, and lifecycle layer that an
+MCP adapter can wrap later. The current interface is intentionally
+lower-level and works from ordinary containers, shell scripts, Python
+code, notebooks, and agent runtimes that do not speak MCP.
 
 The container sends a request to the Mac; the Mac runs Stata through
 PyStata and returns stdout, return codes, and selected results.
@@ -132,6 +135,33 @@ There are also short wiring examples for:
 
 - [Claude Code](examples/claude/README.md)
 - [Codex-style CLI agents](examples/codex/README.md)
+
+## MCP And Future Development
+
+This repo is deliberately shaped as a foundation for an MCP server, but
+keeps the first release protocol-agnostic. The host shim handles the
+parts an MCP server would still need: finding the macOS Stata install,
+keeping the host token private, translating container paths, serializing
+jobs, enforcing timeouts and cancels, blocking unsafe host escapes by
+default, and managing the shim lifecycle around Docker containers.
+
+An MCP server would be a natural next layer on top of this shim, not a
+replacement for it. That adapter can expose the same capabilities as
+typed MCP tools while reusing the tested host service and client logic.
+
+Likely future work includes:
+
+- an MCP adapter exposing tools such as `stata_health`,
+  `stata_run_code`, `stata_run_do_file`, `stata_job_status`, and
+  `stata_cancel_job`;
+- packaging improvements for easier install, upgrade, and uninstall on
+  macOS;
+- richer job history, logs, and diagnostics for long-running empirical
+  workflows;
+- optional lifecycle helpers for users who stop containers outside the
+  provided wrappers;
+- more examples for common agent, notebook, and CI workflows;
+- modernization of FastAPI startup handling to use lifespan events.
 
 ## Security Model
 
