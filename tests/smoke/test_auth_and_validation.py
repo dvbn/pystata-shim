@@ -25,7 +25,13 @@ def _load_app_module(extra_env: dict[str, str] | None = None):
     # global _EXPECTED_TOKEN reflects the current env.
     os.environ["PYSTATA_SHIM_TOKEN"] = TOKEN
     os.environ["PYSTATA_SHIM_HOME"] = tempfile.mkdtemp()
-    os.environ["PYSTATA_SHIM_SKIP_WARMUP"] = "1"
+    # PYSTATA_SHIM_WARMUP defaults to off under the lifespan handler,
+    # so we just make sure the opt-in flag is absent. The legacy
+    # PYSTATA_SHIM_SKIP_WARMUP variable is no longer read by the
+    # server; we still pop it here defensively in case the calling
+    # shell exported it.
+    os.environ.pop("PYSTATA_SHIM_WARMUP", None)
+    os.environ.pop("PYSTATA_SHIM_SKIP_WARMUP", None)
     os.environ.pop("PYSTATA_SHIM_HOST", None)
     os.environ.pop("PYSTATA_SHIM_ALLOW_NON_LOOPBACK", None)
     os.environ.pop("PYSTATA_SHIM_ALLOW_UNSAFE_DO", None)

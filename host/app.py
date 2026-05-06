@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import unicodedata
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1140,26 +1141,34 @@ class StataSupervisor:
 
 
 SUPERVISOR = StataSupervisor(edition=EDITION)
-app = FastAPI(title="pystata-shim", version="1.0.0")
 
 
-@app.on_event("startup")
-def on_startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup. The async ctx-mgr is required by FastAPI 0.110+; the body
+    # itself is plain sync code because none of these calls await anything.
     _prune_old_runs()
     _warn_if_audit_log_huge()
     # Default contract for the container-session lifecycle: starting the
     # HTTP shim must not initialize Stata until an explicit health probe
     # or a real job is requested. The legacy PYSTATA_SHIM_SKIP_WARMUP=1
     # is still honored as a no-op for back-compat with older recipes.
-    if os.environ.get("PYSTATA_SHIM_WARMUP") != "1":
-        return
-    # Operator opted into eager warm-up. Run it off the listen path so
-    # uvicorn binds the socket immediately even if PyStata import is slow.
-    threading.Thread(
-        target=lambda: SUPERVISOR.health(include_detail=False),
-        name="pystata-shim-warmup",
-        daemon=True,
-    ).start()
+    if os.environ.get("PYSTATA_SHIM_WARMUP") == "1":
+        # Operator opted into eager warm-up. Run it off the listen path so
+        # uvicorn binds the socket immediately even if PyStata import is slow.
+        threading.Thread(
+            target=lambda: SUPERVISOR.health(include_detail=False),
+            name="pystata-shim-warmup",
+            daemon=True,
+        ).start()
+    yield
+    # Shutdown. Nothing to do — the worker subprocess is owned by the
+    # supervisor's per-job lifecycle, the warm-up thread is a daemon, and
+    # uvicorn closes its own listen socket. Left here as a deliberate
+    # no-op so a future contributor adding cleanup has the right hook.
+
+
+app = FastAPI(title="pystata-shim", version="1.0.0", lifespan=lifespan)
 
 
 # --- Routes --------------------------------------------------------------

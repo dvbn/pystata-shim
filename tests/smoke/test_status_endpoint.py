@@ -36,6 +36,37 @@ def _load_app_module(extra_env: dict[str, str] | None = None):
     return mod
 
 
+def test_app_uses_lifespan_handler_not_deprecated_on_event():
+    """FastAPI 0.110+ deprecated @app.on_event in favor of an
+    asynccontextmanager `lifespan` passed to FastAPI(). The shim
+    pinned `fastapi<0.130`, but a future release will remove the
+    decorator entirely. This test prevents accidental regressions
+    if a future contributor reaches for the old API.
+
+    Asserts on the LIVE router state — not the source text — so a
+    contributor cannot defeat the test with a comment that mentions
+    `@app.on_event` or a string literal containing `lifespan=`. The
+    only way to satisfy this test is to actually wire lifespan into
+    the FastAPI() constructor.
+    """
+    mod = _load_app_module()
+    # Lifespan is the live wiring; on_startup / on_shutdown lists must
+    # be empty because we deliberately never registered handlers there.
+    assert mod.app.router.lifespan_context is mod.lifespan, (
+        "FastAPI app must be constructed with lifespan=lifespan; "
+        "the router's lifespan_context should point at our async "
+        "context manager"
+    )
+    assert mod.app.router.on_startup == [], (
+        "host/app.py must not register any @app.on_event('startup') "
+        "handlers — startup work belongs in the lifespan body"
+    )
+    assert mod.app.router.on_shutdown == [], (
+        "host/app.py must not register any @app.on_event('shutdown') "
+        "handlers — shutdown work belongs in the lifespan body"
+    )
+
+
 def test_status_endpoint_exists_and_returns_minimal_payload():
     mod = _load_app_module()
     from fastapi.testclient import TestClient
