@@ -527,6 +527,163 @@ def test_start_refuses_when_foreign_listener_holds_port():
         shutil.rmtree(fake_path, ignore_errors=True)
 
 
+def test_start_refuses_when_foreign_200_listener_holds_port():
+    """Variant of the foreign-listener test for an HTTP 200 server
+    whose body does not contain `pool_state`. The classic real-world
+    failure mode is HTTP 404 (an old API shape) — but a freshly-bound
+    unrelated service that returns 200 with its own JSON body must be
+    rejected by the same code path, since the production guard greps
+    for `pool_state` on the body, not on the status line."""
+    import socket
+    import threading
+
+    home = tempfile.mkdtemp()
+    fake_path = tempfile.mkdtemp()
+    _populate_fake_path(fake_path)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    bound_port = sock.getsockname()[1]
+    sock.listen(8)
+    stop = threading.Event()
+
+    def _serve():
+        sock.settimeout(0.25)
+        while not stop.is_set():
+            try:
+                client, _ = sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                client.recv(4096)
+                # 200 OK, but the body does NOT mention `pool_state`.
+                # An unrelated service ("status: alive" from a generic
+                # health endpoint) is the realistic shape here.
+                body = b'{"status":"alive","service":"unrelated"}'
+                resp = (
+                    b"HTTP/1.0 200 OK\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                    b"\r\n" + body
+                )
+                client.sendall(resp)
+            finally:
+                client.close()
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+
+    try:
+        start_script = Path(home) / "start.sh"
+        start_script.write_text("#!/usr/bin/env bash\n: never run\n")
+        start_script.chmod(0o755)
+        proc = _run(
+            ["start"],
+            {"PYSTATA_SHIM_HOME": home, "PYSTATA_SHIM_PORT": str(bound_port)},
+            timeout=20,
+        )
+        combined = proc.stdout + proc.stderr
+        assert proc.returncode != 0, (
+            "start must refuse when an HTTP 200 listener holds the port "
+            f"but does not return our pool_state payload; got rc=0 with "
+            f"output {combined!r}"
+        )
+        lower = combined.lower()
+        assert any(kw in lower for kw in ("lsof", "another", "foreign", "already")), (
+            "expected actionable error mentioning lsof / another shim / "
+            f"port conflict cleanup; got: {combined!r}"
+        )
+    finally:
+        stop.set()
+        t.join(timeout=2)
+        sock.close()
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(fake_path, ignore_errors=True)
+
+
+def test_spawn_shim_pid_is_alive_after_parent_python_exits():
+    """`spawn_shim` runs the shim through `python3 subprocess.Popen(...
+    start_new_session=True)`. The Python parent exits as soon as it
+    has printed the child PID. The PID written to `shim.pid` must
+    refer to a still-running process — otherwise the lifecycle script
+    would record a dead PID and `cmd_status` / `cmd_stop` would never
+    find anything.
+
+    Scope of this test: it confirms the PID file points at a live
+    process after the Python intermediary exits. It does NOT prove
+    `start_new_session=True` specifically — on Linux, an orphaned
+    child whose parent has exited gets reparented to init and stays
+    alive even without a session leadership change, so a broken
+    spawn_shim that dropped `start_new_session=True` would still
+    pass this test. The production reason for `start_new_session` is
+    SIGHUP isolation when the calling shell's session exits on
+    macOS, which would need an interactive-tty test fixture to
+    exercise. That gap is acknowledged in FUTURE_WORK as
+    test-coverage debt and not blocking for v1.
+    """
+    home = tempfile.mkdtemp()
+    fake_path = tempfile.mkdtemp()
+    _populate_fake_path(fake_path)
+    try:
+        # start.sh is a long sleep so the child stays alive through
+        # the test. cmd_start will spawn it via the python3 path,
+        # write the PID, then time out waiting for /status (because
+        # nothing actually serves the port). The interesting part is
+        # what happens BEFORE the timeout: the PID has to be alive.
+        start_script = Path(home) / "start.sh"
+        start_script.write_text("#!/usr/bin/env bash\nexec sleep 120\n")
+        start_script.chmod(0o755)
+
+        env_extra = {
+            "PYSTATA_SHIM_HOME": home,
+            # Privileged-and-empty port so is_listening always fails.
+            "PYSTATA_SHIM_PORT": "1",
+        }
+        # Use the real PATH so python3 is found. cmd_start will fail
+        # the readiness wait, but spawn_shim will have written a PID
+        # before that.
+        proc = _run(
+            ["start"],
+            env_extra,
+            path_prefix=fake_path,
+            timeout=30,
+        )
+        assert proc.returncode != 0, (
+            "expected start to time out (no listener); got rc=0"
+        )
+        pid_file = Path(home) / "shim.pid"
+        assert pid_file.exists(), "spawn_shim must have written a PID file"
+        pid_text = pid_file.read_text().strip()
+        assert pid_text and pid_text.isdigit(), (
+            f"PID file contents must be a positive integer; got {pid_text!r}"
+        )
+        pid = int(pid_text)
+        # `os.kill(pid, 0)` raises ProcessLookupError if the process
+        # has exited. spawn_shim's child should still be alive — the
+        # sleep 120 has only been running for ~15 seconds at this
+        # point.
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            raise AssertionError(
+                f"spawn_shim's child PID {pid} is not running; "
+                f"start_new_session detachment is broken"
+            )
+    finally:
+        # Reap the sleep stub.
+        pid_file = Path(home) / "shim.pid"
+        if pid_file.exists():
+            try:
+                p = int(pid_file.read_text().strip())
+                os.kill(p, 9)
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(fake_path, ignore_errors=True)
+
+
 def test_stop_if_unused_keeps_shim_when_other_containers_exist():
     """When `docker` reports a labeled container is running,
     stop-if-unused must NOT stop the shim, even if the shim looks idle."""

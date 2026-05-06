@@ -16,3 +16,24 @@ jobs:
         run: python -m pip install -r requirements-smoke.txt
       - name: Run smoke tests
         run: PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/smoke -q
+
+  # Created-container shape: runs the same suite inside python:3.12-slim,
+  # which has no curl. This is the gate that surfaced the no-curl /dev/tcp
+  # partial-line bug in shimctl.sh during real-host validation. Keeping
+  # the job here means the no-curl is_listening path stays covered
+  # automatically. Pure docker run, no untrusted github inputs.
+  smoke-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run smoke tests inside python:3.12-slim (no curl)
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            python:3.12-slim \
+            bash -lc '
+              set -e
+              python -m pip install --no-cache-dir -r requirements-smoke.txt
+              PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/smoke -q
+            '
