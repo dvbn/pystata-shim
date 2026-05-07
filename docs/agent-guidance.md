@@ -5,6 +5,13 @@ Code, a custom harness, etc.) into a container that talks to
 `pystata-shim`. It is a checklist for making the agent produce Stata
 output that actually lands on your disk.
 
+If you operate an agent that reads `AGENTS.md` files at session start,
+also point it at the in-container breadcrumb at
+`/opt/pystata-shim-client/AGENTS.md` (mounted from `client/AGENTS.md`
+in this repo). It is a quick-reference twin of this file scoped to
+what an agent inside the container actually sees, including the
+warning against stale `openstata_pystata` modules.
+
 ## Core rules
 
 1. **Write `.do` files under `$PYSTATA_SHIM_CONTAINER_WORKSPACE`**

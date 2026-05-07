@@ -23,6 +23,13 @@ The container side is deliberately small. You need:
    can find them. Put the `client/` directory on `PATH` so the
    `stata-do` CLI resolves as a bare command.
 
+   For interactive login shells (`docker exec ... bash -l`), also
+   bind-mount `client/profile.d/pystata-shim.sh` to
+   `/etc/profile.d/pystata-shim.sh`. Without it, `/etc/profile`
+   rewrites `PATH` from scratch on login and drops anything you
+   passed via `docker create -e PATH=...`. The example Justfile
+   already does this; mirror it in your own wrappers.
+
 ## Docker Desktop File Sharing
 
 If your project workspace lives outside your `/Users/` tree (for
@@ -91,14 +98,19 @@ docker run --rm -it \
   -e PYSTATA_SHIM_HOST_WORKSPACE="$(pwd)" \
   -v "$(pwd):/workspace" \
   -v "$(pwd)/client:/opt/pystata-shim-client:ro" \
+  -v "$(pwd)/client/profile.d/pystata-shim.sh:/etc/profile.d/pystata-shim.sh:ro" \
   --add-host=host.docker.internal:host-gateway \
   python:3.12-slim bash -lc '
-    export PYTHONPATH=/opt/pystata-shim-client
     python3 -c "import pystata_shim as s; print(s.health_full())"
   '
 
 bash host/scripts/shimctl.sh stop-if-unused
 ```
+
+The bind-mounted profile snippet is the supported way to keep
+`stata-do` on `PATH` and `pystata_shim` on `PYTHONPATH` across login
+shells; you no longer need to export them by hand inside the
+`bash -lc '...'` body.
 
 `PYSTATA_SHIM_HOST_WORKSPACE` must be the absolute host path that
 backs the `/workspace` bind. If you `cd /Users/you/proj && docker run

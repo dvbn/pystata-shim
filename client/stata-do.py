@@ -74,7 +74,11 @@ def _main(argv: list[str]) -> int:
         "--capture",
         action="append",
         default=[],
-        help="Stata name to capture after the run (e.g. e(b), e(N)). Repeatable.",
+        help=(
+            "Stata name to capture after the run, e.g. 'e(b)' or 'e(N)'."
+            " Quote values containing parentheses to keep the shell from"
+            " parsing them as a function definition. Repeatable."
+        ),
     )
     parser.add_argument(
         "--health",

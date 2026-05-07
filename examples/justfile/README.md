@@ -1,9 +1,18 @@
 # Justfile container-session lifecycle example
 
-A generic [`just`](https://github.com/casey/just) recipe set you can copy
-into your own project to wire a Docker container to the host
+A [`just`](https://github.com/casey/just) recipe set you can copy into
+your own project to wire a Docker container to the host
 `pystata-shim`. The shim runs only while a container session needs it;
 when the last labeled container stops, the shim stops too.
+
+**Image assumptions.** The recipes target `bash` on a Debian-derived
+image (default: `python:3.12-slim`). Login-shell PATH is restored via
+a bind-mounted `/etc/profile.d/pystata-shim.sh` snippet. Alpine images
+without `bash` and images whose `/etc/profile` does not source
+`/etc/profile.d/*.sh` need additional wiring; custom images that
+curate their own PATH/PYTHONPATH should review the `-e PATH=...` and
+`-e PYTHONPATH=...` lines in the `create` recipe before copying it
+verbatim.
 
 ## When to use this
 
@@ -24,11 +33,15 @@ extra tools.
    You do **not** need `INSTALL_LAUNCH_AGENT=1` — this Justfile starts
    the shim explicitly via `shimctl.sh`.
 2. Copy [`Justfile`](./Justfile) into the root of your own project.
-3. Edit the four variables at the top:
+3. Edit the variables at the top:
    - `image` — the Docker image you want to run inside.
    - `container_prefix` — prefix for the names of created containers.
    - `shimctl` — path to `host/scripts/shimctl.sh` in your pystata-shim
      checkout. The default assumes a sibling clone at `../pystata-shim`.
+   - `client_dir` — path to the pystata-shim `client/` directory. It
+     gets bind-mounted read-only into the container so `stata-do` and
+     `import pystata_shim` work inside it. Default also assumes a
+     sibling clone.
    - `shim_url` — defaults to the macOS-friendly
      `http://host.docker.internal:8787`. On Linux change to the host
      gateway address (e.g. `http://172.17.0.1:8787`).
@@ -66,11 +79,18 @@ afterward.
 `just create` creates the container with:
 
 - `--label com.pystata.shim.enabled=true` (so stop-if-unused can find it)
+- `-e PYSTATA_SHIM_TOKEN` (passed by name from your shell, never as a literal value)
 - `-e PYSTATA_SHIM_BASE_URL=...` (where the container looks for the shim)
 - `-e PYSTATA_SHIM_CONTAINER_WORKSPACE=/workspace`
 - `-e PYSTATA_SHIM_HOST_WORKSPACE="$project_dir"` (host path the
   shim should map back to)
-- `-v "$project_dir:/workspace:rw"`
+- `-e PATH=/opt/pystata-shim-client:...` and `-e PYTHONPATH=/opt/pystata-shim-client`
+  so `stata-do` resolves and `import pystata_shim` works
+- `-v "$project_dir:/workspace:rw"` (your project)
+- `-v "$client_dir:/opt/pystata-shim-client:ro"` (the shim client)
+- `-v "$client_dir/profile.d/pystata-shim.sh:/etc/profile.d/pystata-shim.sh:ro"`
+  so login shells (`bash -l`, the default for `just shell`) re-add the
+  client to PATH after `/etc/profile` resets it
 - `--add-host=host.docker.internal:host-gateway`
 
 `just start` starts the container, then asks `shimctl` to start the

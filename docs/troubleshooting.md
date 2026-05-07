@@ -397,6 +397,51 @@ chmod +x client/stata-do.py
 `git` preserves these bits across pulls, so you only need to do
 this once.
 
+## `stata-do: command not found` inside an interactive container shell
+
+`docker exec ... bash -l` and `docker exec ... bash -lc "..."` both
+re-source `/etc/profile`, which on Debian/Ubuntu (and therefore
+`python:3.12-slim` and most slim base images) rewrites `PATH` from
+scratch. The `-e PATH=/opt/pystata-shim-client:...` you set on
+`docker create` survives non-login shells but gets dropped by login
+shells before your command runs.
+
+The supported fix is to bind-mount the client's profile snippet so
+login shells re-add the client to PATH:
+
+```bash
+docker run ... \
+    -v "$REPO/client:/opt/pystata-shim-client:ro" \
+    -v "$REPO/client/profile.d/pystata-shim.sh:/etc/profile.d/pystata-shim.sh:ro" \
+    ...
+```
+
+The example Justfile in `examples/justfile/Justfile` already does
+this. If you maintain your own wrapper, copy that mount.
+
+If `/etc/profile` in your image is a no-op (some Alpine builds), use a
+non-login shell instead — `docker exec ... bash -c "stata-do --health"`
+inherits the `-e PATH=...` from `docker create` directly.
+
+## `Syntax error: "(" unexpected` when calling `stata-do --capture e(N)`
+
+`e(N)` looks like a Bourne-shell function definition to `sh`/`bash`,
+so the inner shell rejects the command before `stata-do` even starts.
+Quote any capture name that contains parentheses:
+
+```bash
+# wrong — shell parses e(N) as syntax
+stata-do main.do --capture e(N)
+
+# right — quotes keep e(N) as one literal argument
+stata-do main.do --capture 'e(N)' --capture 'e(r2)'
+```
+
+This bites hardest with nested quoting like
+`docker exec ... sh -lc 'stata-do ... --capture e(N)'`: the outer
+single quotes protect from the host shell, but the inner `sh` then
+parses the same string as commands.
+
 ## Stata says something about `` `...' `` or `$...` in my path
 
 Stata expands local-macro (`` `name' ``) and global-macro (`$name`)

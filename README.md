@@ -101,15 +101,18 @@ docker run --rm -it \
   -e PYSTATA_SHIM_HOST_WORKSPACE="$(pwd)" \
   -v "$(pwd):/workspace" \
   -v "$(pwd)/client:/opt/pystata-shim-client:ro" \
+  -v "$(pwd)/client/profile.d/pystata-shim.sh:/etc/profile.d/pystata-shim.sh:ro" \
   --add-host=host.docker.internal:host-gateway \
-  python:3.12-slim bash -lc '
-    export PATH=/opt/pystata-shim-client:$PATH
-    export PYTHONPATH=/opt/pystata-shim-client
-    stata-do --health
-  '
+  python:3.12-slim bash -lc 'stata-do --health'
 
 bash host/scripts/shimctl.sh stop-if-unused
 ```
+
+The profile.d bind-mount keeps `stata-do` on PATH and `pystata_shim`
+on PYTHONPATH inside login shells — `bash -l` re-sources `/etc/profile`
+on Debian-derived images, which would otherwise drop anything passed
+via `docker create -e PATH=...`. See [docs/docker.md](docs/docker.md)
+for the full wiring contract.
 
 Then run a `.do` file:
 

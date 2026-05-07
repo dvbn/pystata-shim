@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 import plistlib
 import re
 import tempfile
@@ -141,6 +142,140 @@ def test_example_justfile_passes_the_token():
         "container at create time, otherwise the wrapper produces a "
         "container that 401s on every request"
     )
+
+
+def test_example_justfile_mounts_client_and_sets_pythonpath():
+    """Without the client mount the container has no `stata-do` and
+    cannot `import pystata_shim`. Without PYTHONPATH the Python import
+    fails even when the directory is mounted. Without PATH the CLI is
+    not on a non-login shell's lookup path. Lock all three."""
+    body = JUSTFILE.read_text(encoding="utf-8")
+    assert ":/opt/pystata-shim-client:ro" in body, (
+        "examples/justfile/Justfile must bind-mount client/ at "
+        "/opt/pystata-shim-client read-only"
+    )
+    assert "PYTHONPATH=/opt/pystata-shim-client" in body, (
+        "examples/justfile/Justfile must set PYTHONPATH so "
+        "`import pystata_shim` works inside the container"
+    )
+    assert "/opt/pystata-shim-client:" in body and 'PATH="' in body, (
+        "examples/justfile/Justfile must put /opt/pystata-shim-client "
+        "first on PATH so `stata-do` resolves in non-login shells"
+    )
+
+
+def test_example_justfile_mounts_profile_d_snippet():
+    """The Justfile's `shell` recipe uses `bash -l` / `bash -lc`. On
+    Debian-based images /etc/profile rewrites PATH from scratch,
+    dropping anything we set via `docker create -e PATH=...`. The
+    profile.d snippet bind-mount is what keeps `stata-do` discoverable
+    in interactive login shells."""
+    body = JUSTFILE.read_text(encoding="utf-8")
+    assert "/etc/profile.d/pystata-shim.sh:ro" in body, (
+        "examples/justfile/Justfile must bind-mount the profile.d "
+        "snippet so login shells re-add /opt/pystata-shim-client to PATH"
+    )
+
+
+def test_profile_d_snippet_exists_and_idempotent():
+    """The profile snippet has to exist on disk (the Justfile fails
+    fast if missing) and must guard against double-prepending PATH or
+    PYTHONPATH; profile is sourced on every login and many container
+    workflows nest login shells."""
+    snippet = REPO / "client" / "profile.d" / "pystata-shim.sh"
+    assert snippet.exists(), f"missing profile.d snippet at {snippet}"
+    body = snippet.read_text(encoding="utf-8")
+    # Idempotency check: must inspect PATH before prepending.
+    assert '*":/opt/pystata-shim-client:"*' in body, (
+        "profile.d snippet must guard against duplicating "
+        "/opt/pystata-shim-client on PATH when sourced repeatedly"
+    )
+    # Both PATH and PYTHONPATH must end up exported. Allow either a
+    # single combined `export PATH PYTHONPATH` or two separate exports.
+    has_path_export = (
+        "export PATH" in body and ("PATH PYTHONPATH" in body or "export PATH=" in body or body.count("export PATH") >= 1)
+    )
+    has_pythonpath_export = "PYTHONPATH" in body and ("PATH PYTHONPATH" in body or "export PYTHONPATH" in body)
+    assert has_path_export and has_pythonpath_export, (
+        "profile.d snippet must export both PATH and PYTHONPATH"
+    )
+
+
+def test_profile_d_snippet_executes_correctly_under_real_shell():
+    """Behavior-level check: source the snippet twice in a fresh /bin/sh
+    under both empty and populated PYTHONPATH, and verify that
+    /opt/pystata-shim-client lands exactly once at the front of PATH and
+    PYTHONPATH (and that the snippet is parse-clean)."""
+    import subprocess
+
+    snippet = REPO / "client" / "profile.d" / "pystata-shim.sh"
+
+    scenarios = [
+        # (label, env-overrides, expected-prefix-occurrences)
+        ("unset PYTHONPATH", {"PYTHONPATH": None}, 1),
+        ("empty PYTHONPATH",  {"PYTHONPATH": ""}, 1),
+        ("populated PYTHONPATH without ours",
+         {"PYTHONPATH": "/x:/y"}, 1),
+        ("populated PYTHONPATH already containing ours",
+         {"PYTHONPATH": "/x:/opt/pystata-shim-client:/y"}, 1),
+    ]
+
+    for label, env_changes, expected_count in scenarios:
+        env = dict(os.environ)
+        env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
+        for k, v in env_changes.items():
+            if v is None:
+                env.pop(k, None)
+            else:
+                env[k] = v
+        # Source twice to exercise the idempotency guard.
+        cmd = (
+            f". {snippet}; . {snippet}; "
+            "printf 'PATH=%s\\nPYTHONPATH=%s\\n' \"$PATH\" \"${PYTHONPATH:-}\""
+        )
+        proc = subprocess.run(
+            ["/bin/sh", "-c", cmd],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert proc.returncode == 0, (
+            f"[{label}] /bin/sh exited {proc.returncode}; stderr={proc.stderr!r}"
+        )
+        out = proc.stdout
+        path_line = next(
+            (line for line in out.splitlines() if line.startswith("PATH=")),
+            None,
+        )
+        pythonpath_line = next(
+            (line for line in out.splitlines() if line.startswith("PYTHONPATH=")),
+            None,
+        )
+        assert path_line is not None, f"[{label}] missing PATH line in {out!r}"
+        assert pythonpath_line is not None, (
+            f"[{label}] missing PYTHONPATH line in {out!r}"
+        )
+        path_value = path_line[len("PATH="):]
+        pp_value = pythonpath_line[len("PYTHONPATH="):]
+        # Each should contain /opt/pystata-shim-client exactly once.
+        path_count = path_value.split(":").count("/opt/pystata-shim-client")
+        pp_count = pp_value.split(":").count("/opt/pystata-shim-client")
+        assert path_count == expected_count, (
+            f"[{label}] expected /opt/pystata-shim-client to appear "
+            f"{expected_count}x in PATH after double-source, got {path_count}: "
+            f"{path_value}"
+        )
+        assert pp_count == expected_count, (
+            f"[{label}] expected /opt/pystata-shim-client to appear "
+            f"{expected_count}x in PYTHONPATH after double-source, got "
+            f"{pp_count}: {pp_value}"
+        )
+        # And the prepended copy must come first.
+        assert path_value.split(":")[0] == "/opt/pystata-shim-client", (
+            f"[{label}] /opt/pystata-shim-client must be first on PATH; got "
+            f"{path_value}"
+        )
 
 
 def test_plist_template_substitutions_complete():
